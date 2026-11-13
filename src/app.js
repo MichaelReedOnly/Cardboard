@@ -1,6 +1,6 @@
 import {LocalBoardRepository} from './storage.js';
 import {createSeed} from './seed.js';
-import {clone,moveCard,parseItems} from './model.js';
+import {balanceColumns,clone,getColumns,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts} from './model.js';
 
 const paths={search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
 function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',paths[name]||paths.note);svg.append(p);return svg;}
@@ -10,10 +10,63 @@ function showError(e){toast(e.message||String(e),true);}
 let toastTimer;function toast(text,error=false){const e=document.querySelector('#toast');e.textContent=text;e.className='visible';e.setAttribute('role',error?'alert':'status');clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.className='',error?9000:2800);}
 let repository,state,boardId,filter='',query='',sort='manual',showSearch=false,busy=false,dragId=null;
 const app=document.querySelector('#app'),editor=document.querySelector('#editor'),settings=document.querySelector('#settings');
-async function change(fn,message,afterSave){if(busy)return false;busy=true;try{const next=clone(state);fn(next);const saved=await repository.save(next);state=saved;afterSave?.();render();if(message)toast(message);return true;}catch(e){showError(e);return false;}finally{busy=false;}}
+async function change(fn,message,afterSave){if(busy)return false;busy=true;try{const next=clone(state);if(fn(next)===false)return true;reconcileLayouts(next);const saved=await repository.save(next);state=saved;afterSave?.();render();if(message)toast(message);return true;}catch(e){showError(e);return false;}finally{busy=false;}}
+function columnCount() {
+  const width = window.innerWidth;
+  return width>=1450?5:width>1000?4:width>740?3:width>460?2:1;
+}
+
+function endDrag() {
+  dragId = null;
+  app.classList.remove('drag-active');
+  app.querySelectorAll('.dragging,.drag-over').forEach(node=>node.classList.remove('dragging','drag-over'));
+}
+
+function acceptDrop(event, allowed) {
+  if (!allowed) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  event.currentTarget.classList.add('drag-over');
+}
+
+function moveToColumn(cardId, count, destination) {
+  if (sort !== 'manual' || count !== columnCount()) return false;
+  return change(next=>moveCardToColumnEnd(next,boardId,count,cardId,destination),'Card moved');
+}
+
+function columnDropTarget(count, index) {
+  const target = el('div','column-drop-target',`Drop at bottom of column ${index+1}`);
+  const canDrop = () => dragId && state.cards.some(card=>card.id===dragId && !card.pinned);
+  target.ondragover = event => acceptDrop(event,canDrop());
+  target.ondragleave = () => target.classList.remove('drag-over');
+  target.ondrop = event => {
+    if (!canDrop()) return;
+    event.preventDefault();
+    const cardId = dragId;
+    endDrag();
+    moveToColumn(cardId,count,index);
+  };
+  return target;
+}
+
+function chooseColumn(card, count) {
+  dialogHead(settings,'Move to column');
+  settings.setAttribute('aria-label','Move to column');
+  for (let index=0; index<count; index++) {
+    settings.append(button(`Bottom of column ${index+1}`,'menu-row',async()=>{
+      if (await moveToColumn(card.id,count,index)) {
+        settings.close();
+        const moved = Array.from(app.querySelectorAll('.card')).find(node=>node.dataset.id===card.id);
+        moved?.querySelector('.move-column')?.focus();
+      }
+    }));
+  }
+  settings.showModal();
+}
 const dateKey=(offset=0)=>{const d=new Date();d.setDate(d.getDate()+offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
 function visibleCards(){return state.cards.filter(c=>c.boardId===boardId).filter(c=>!filter||(filter==='today'?c.date===dateKey():filter==='tomorrow'?c.date===dateKey(1):filter==='undated'?!c.date:filter==='none'?!c.projectId:c.projectId===filter)).filter(c=>[c.title,c.body,...c.items.map(i=>i.text),state.projects.find(p=>p.id===c.projectId)?.name||''].join(' ').toLowerCase().includes(query.toLowerCase())).sort((a,b)=>Number(b.pinned)-Number(a.pinned)||(sort==='title'?a.title.localeCompare(b.title):sort==='date'?(a.date||'9999').localeCompare(b.date||'9999'):0));}
 function render(){
+ endDrag();
  const focusSearch=document.activeElement?.id==='search';const cursor=focusSearch?document.activeElement.selectionStart:null;
  app.replaceChildren();const header=el('header');const brand=el('div','brand');brand.setAttribute('aria-hidden','true');for(let i=0;i<4;i++)brand.append(el('i'));header.append(brand);
  const title=button(state.boards.find(b=>b.id===boardId)?.name||'All','board-select',()=>openSettings('boards'));title.append(icon('down'));header.append(title);
@@ -24,15 +77,47 @@ function render(){
  state.projects.filter(p=>p.boardId===boardId).forEach((p,i)=>filters.append(pill(p.name,p.id,['#ffd75e','#9bc8eb','#7399ff'][i%3])));filters.append(pill('No project','none'),button('＋ New project','new-project',()=>nameDialog('New project',async name=>{const ok=await change(s=>s.projects.push({id:crypto.randomUUID(),boardId,name}),'Project created');return ok;})));app.append(filters);
  const cards=visibleCards();if(showSearch){const search=el('div','search-wrap');const input=el('input');input.id='search';input.type='search';input.placeholder='Search your cards';input.setAttribute('aria-label','Search cards');input.value=query;input.oninput=()=>{query=input.value;render();};search.append(icon('search'),input,el('span','search-count',`${cards.length} cards`));app.append(search);}
  const grid=el('main','board');grid.setAttribute('aria-label','Cards board');
- const cols=window.innerWidth>1449?5:window.innerWidth>1000?4:window.innerWidth>740?3:window.innerWidth>460?2:1;
- const columns=Array.from({length:cols},()=>el('div','column'));const heights=Array(cols).fill(0);
- for(const c of cards){const index=heights.indexOf(Math.min(...heights));columns[index].append(renderCard(c));heights[index]+=130+c.body.length*.34+c.items.reduce((n,i)=>n+Math.max(43,i.text.length*.6),0)+(c.type==='week'?100:0);}
+ const count = columnCount();
+ const manual = sort === 'manual';
+ const layout = manual ? getColumns(state,boardId,count) : balanceColumns(cards,count);
+ const visible = new Map(cards.map(card=>[card.id,card]));
+ const columns = layout.map((ids,index)=>{
+   const column = el('section','column');
+   column.setAttribute('aria-label',`Column ${index+1}`);
+   for (const id of ids) {
+     if (visible.has(id)) column.append(renderCard(visible.get(id),count,index));
+   }
+   if (manual) column.append(columnDropTarget(count,index));
+   return column;
+ });
  if(cards.length)grid.append(...columns);else{const empty=el('div','empty');empty.append(el('h2','',query||filter?'No matching cards':'A little space for your thoughts'),el('p','',query||filter?'Try another search or clear your filters.':'Start with a note, a list, or a plan for the week.'),button(query||filter?'Clear filters':'Create a card','primary',()=>{if(query||filter){query='';filter='';render();}else openEditor();}));grid.append(empty);}app.append(grid,button('Create a card','fab',()=>openEditor(), 'plus'),el('div','footer saved',`${state.cards.filter(c=>c.boardId===boardId).length} cards · Saved on this device`));
  if(focusSearch){const input=document.querySelector('#search');input?.focus();try{input?.setSelectionRange(cursor,cursor);}catch{}}
 }
-function renderCard(c){
+function renderCard(c,count,columnIndex){
  const card=el('article',`card ${c.type}`);card.dataset.id=c.id;card.draggable=sort==='manual';card.setAttribute('aria-label',c.title);
- card.ondragstart=e=>{if(e.target.closest('button,a')){e.preventDefault();return;}dragId=c.id;e.dataTransfer.setData('text/plain',c.id);card.classList.add('dragging');};card.ondragend=()=>{dragId=null;document.querySelectorAll('.dragging,.drag-over').forEach(e=>e.classList.remove('dragging','drag-over'));};card.ondragover=e=>{if(dragId&&dragId!==c.id){e.preventDefault();card.classList.add('drag-over');}};card.ondragleave=()=>card.classList.remove('drag-over');card.ondrop=e=>{e.preventDefault();card.classList.remove('drag-over');const from=dragId;dragId=null;if(!from||from===c.id)return;try{const next=moveCard(state,from,c.id);change(s=>{s.cards=next.cards;},'Card moved');}catch(err){showError(err);}};
+ const canDropBefore = () => dragId && dragId!==c.id
+   && state.cards.some(card=>card.id===dragId && card.pinned===c.pinned);
+ card.ondragstart = event => {
+   if (sort!=='manual' || event.target.closest('button,a')) {
+     event.preventDefault();
+     return;
+   }
+   dragId = c.id;
+   event.dataTransfer.effectAllowed = 'move';
+   event.dataTransfer.setData('text/plain',c.id);
+   card.classList.add('dragging');
+   if (!c.pinned) app.classList.add('drag-active');
+ };
+ card.ondragend = endDrag;
+ card.ondragover = event => acceptDrop(event,canDropBefore());
+ card.ondragleave = () => card.classList.remove('drag-over');
+ card.ondrop = event => {
+   if (!canDropBefore() || count!==columnCount()) return;
+   event.preventDefault();
+   const cardId = dragId;
+   endDrag();
+   change(next=>moveInColumns(next,boardId,count,cardId,columnIndex,c.id),'Card moved');
+ };
  const top=el('div','card-top');const head=el('div','card-header');const type=c.id==='today'?'sun':c.type==='week'?'calendar':c.type==='link'?'link':'note';const badge=el('span',`card-icon ${type}`);badge.append(icon(type));const h=el('h2','card-title',c.title);head.append(badge,h);head.onclick=()=>openEditor(c.id);top.append(head);const p=state.projects.find(p=>p.id===c.projectId);top.append(el('p','subtitle',p?.name||(c.type==='week'?'Three things a day. No more.':c.type==='link'?'Save a page. See it at a glance.':c.type==='checklist'?'A little progress, one thing at a time.':'')));card.append(top);
  if(c.pinned){const pin=el('span','pin-mark');pin.title='Pinned';pin.append(icon('pin'));card.append(pin);}
  if(c.type==='week'||c.type==='checklist'){
@@ -44,10 +129,26 @@ function renderCard(c){
    card.append(el('div','note-body',c.body||'A little space for a thought…'));
  }
  if(c.date){const date=el('div','date-tag');date.append(icon('calendar'),document.createTextNode(c.date===dateKey()?'Today':c.date===dateKey(1)?'Tomorrow':new Date(`${c.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})));card.append(date);}
- const tools=el('div','card-tools');tools.append(button(`Edit ${c.title}`,'',()=>openEditor(c.id)));const group=el('div');group.append(button(c.pinned?`Unpin ${c.title}`:`Pin ${c.title}`,'',()=>change(s=>{const x=s.cards.find(x=>x.id===c.id);x.pinned=!x.pinned;}), 'pin'),button(`Move ${c.title} earlier`,'',()=>moveEarlier(c),'up'));tools.append(group);card.append(tools);return card;
+ const tools=el('div','card-tools');tools.append(button(`Edit ${c.title}`,'',()=>openEditor(c.id)));const group=el('div');group.append(button(c.pinned?`Unpin ${c.title}`:`Pin ${c.title}`,'',()=>change(s=>{const x=s.cards.find(x=>x.id===c.id);x.pinned=!x.pinned;}), 'pin'),button(`Move ${c.title} earlier`,'',()=>moveEarlier(c),'up'));tools.append(group);
+ if (sort==='manual' && !c.pinned) {
+   const move = button('Move to column','move-column',()=>chooseColumn(c,count));
+   move.setAttribute('aria-label',`Move ${c.title} to column`);
+   tools.append(move);
+ }
+ card.append(tools);return card;
 }
-function moveEarlier(c){if(sort!=='manual'){toast('Choose Manual sort to reorder cards.');return;}const peers=visibleCards().filter(x=>x.pinned===c.pinned);const i=peers.findIndex(x=>x.id===c.id);if(i>0)change(s=>{s.cards=moveCard(s,c.id,peers[i-1].id).cards;},'Card moved');else toast('This card is already first in its group.');}
-function dialogHead(dialog,title){dialog.replaceChildren();const head=el('div','dialog-head');head.append(el('h2','',title),button('Close','icon-button close',()=>dialog.close(),'close'));dialog.append(head);}
+function moveEarlier(card) {
+  if (sort!=='manual') { toast('Choose Manual sort to reorder cards.'); return; }
+  const count = columnCount();
+  const columns = getColumns(state,boardId,count);
+  const visible = new Set(visibleCards().filter(peer=>peer.pinned===card.pinned).map(peer=>peer.id));
+  const peers = columns.flat().filter(id=>visible.has(id));
+  const before = peers[peers.indexOf(card.id)-1];
+  if (!before) { toast('This card is already first in its group.'); return; }
+  const destination = columns.findIndex(column=>column.includes(before));
+  change(next=>moveInColumns(next,boardId,count,card.id,destination,before),'Card moved');
+}
+function dialogHead(dialog,title){dialog.replaceChildren();dialog.setAttribute('aria-label',title);const head=el('div','dialog-head');head.append(el('h2','',title),button('Close','icon-button close',()=>dialog.close(),'close'));dialog.append(head);}
 function field(form,label,name,value,tag='input',options){const wrap=el('label','field',label);const input=el(tag);input.name=name;if(tag==='select')for(const [v,t]of options){const o=el('option','',t);o.value=v;input.append(o);}input.value=value??'';wrap.append(input);form.append(wrap);return input;}
 function openEditor(id){
  const existing=state.cards.find(c=>c.id===id);const c=existing||{id:crypto.randomUUID(),title:'',type:'note',projectId:filter&&state.projects.some(p=>p.id===filter)?filter:null,date:filter==='today'?dateKey():filter==='tomorrow'?dateKey(1):'',pinned:false,body:'',items:[],boardId};
