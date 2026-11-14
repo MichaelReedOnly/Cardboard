@@ -27,3 +27,55 @@
   height: auto;
   flex-wrap: wrap;
 }
+
+.quick-actions {
+  position: fixed;
+  inset: auto 30px 28px auto;
+  margin: 0;
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  padding: 4px;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+}
+.quick-actions[open] { display: grid; justify-items: end; gap: 12px; }
+.quick-actions::backdrop { background: #f2f2f755; backdrop-filter: none; }
+.quick-column-row, .column-controls { display: flex; align-items: center; gap: 6px; }
+.quick-pill, .column-controls, .quick-close {
+  border-radius: 999px;
+  background: white;
+  box-shadow: 0 2px 6px #24243214;
+}
+.quick-pill { padding: 10px 14px; font-size: 14px; }
+.column-controls { padding: 4px; }
+.column-step { width: 34px; height: 34px; border-radius: 50%; background: #f2f2f7; }
+.column-value { min-width: 22px; text-align: center; font-size: 19px; font-weight: 700; }
+.auto-columns[aria-pressed=true] { background: #e4edfb; color: #0059af; }
+.quick-close { width: 58px; height: 58px; display: grid; place-items: center; background: #1c1c1e; color: white; }
+.board.compact-columns .card {
+  padding: max(3px, calc(16px * var(--card-scale, 1)));
+  border-radius: max(5px, calc(22px * var(--card-scale, 1)));
+}
+.board.compact-columns .card-title { font-size: max(8px, calc(23px * var(--card-scale, 1))); }
+.board.compact-columns :is(.item-text,.note-body,.link-preview) {
+  font-size: max(7px, calc(12px * var(--card-scale, 1)));
+  padding: max(2px, calc(10px * var(--card-scale, 1)));
+}
+.board.compact-columns :is(.subtitle,.week-label,.date-tag,.card-tools button,.add-item) {
+  font-size: max(7px, calc(11px * var(--card-scale, 1)));
+  overflow-wrap: anywhere;
+}
+.board.compact-columns :is(.card-icon,.check,.week-label) {
+  width: max(7px, calc(19px * var(--card-scale, 1)));
+  height: max(7px, calc(19px * var(--card-scale, 1)));
+}
+.board.compact-columns :is(.card-icon,.check) svg { width: 70%; height: 70%; }
+.board.compact-columns :is(.card-header,.check-row) { gap: max(1px, calc(7px * var(--card-scale, 1))); }
+.board.compact-columns .card-tools { overflow-wrap: anywhere; }
+.board.compact-columns .card-tools button { max-width: 100%; }
+.board.compact-columns .pin-mark { width: max(8px, calc(21px * var(--card-scale, 1))); height: auto; aspect-ratio: 1; top: 4px; right: 4px; }
+.board.compact-columns .pin-mark svg { width: 70%; height: 70%; }
+@media (max-width: 740px) {
+  .board:is([data-columns="4"],[data-columns="5"],[data-columns="6"],[data-columns="7"],[data-columns="8"]) { gap: 4px; padding-inline: 8px; }
+}

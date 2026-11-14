@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {getColumns, moveCardToColumnEnd, reconcileLayouts} from '../src/model.js';
+import {displayColumnCount, getColumns, moveCardToColumnEnd, reconcileLayouts} from '../src/model.js';
 import {LocalBoardRepository} from '../src/storage.js';
 
 function board() {
@@ -9,6 +9,26 @@ function board() {
       id, boardId:'b', title:id, type:'note', pinned:id==='p', body:'', items:[], date:'', projectId:null
     }))};
 }
+
+test('Auto uses visible cards and width while a manual count remains exact',()=>{
+  assert.equal(displayColumnCount(null,2,1200),2);
+  assert.equal(displayColumnCount(null,7,690),2);
+  assert.equal(displayColumnCount(null,0,1200),1);
+  assert.equal(displayColumnCount(8,2,390),8);
+});
+
+test('eight-column layout and board preference survive a backup round trip',async()=>{
+  const state=board();
+  state.boards[0].columnPreference=8;
+  moveCardToColumnEnd(state,'b',8,'a',7);
+  let raw=null;
+  const repo=new LocalBoardRepository({getItem:()=>raw,setItem:(_,value)=>{raw=value;}},board());
+  await repo.importJSON(JSON.stringify(state));
+  assert.equal((await repo.load()).boards[0].columnPreference,8);
+  assert.deepEqual(getColumns(await repo.load(),'b',8)[7],['a']);
+  state.boards[0].columnPreference=9;
+  await assert.rejects(()=>repo.save(state));
+});
 
 test('a move into an empty column preserves every other card and survives export and reload', async()=>{
   const state=board();

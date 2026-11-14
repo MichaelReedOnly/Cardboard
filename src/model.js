@@ -1,4 +1,12 @@
 export const clone = value => structuredClone(value);
+export const MAX_COLUMNS = 8;
+
+export function displayColumnCount(preference, visibleCount, width) {
+  if (preference != null) return preference;
+  const capacity = width <= 460 ? 1 : width <= 740 ? 2 : width <= 1000 ? 3
+    : width < 1450 ? 4 : Math.min(MAX_COLUMNS, 5 + Math.floor((width - 1450) / 240));
+  return Math.max(1, Math.min(visibleCount, capacity));
+}
 export function parseItems(text,type,previous){
   const remaining=[...previous];
   return text.split('\n').filter(x=>x.trim()).map((line,i)=>{
@@ -28,11 +36,13 @@ export function validateState(s) {
     for(const item of c.items){id(item.id);str(item.text);if(typeof item.done!=='boolean')fail();if(item.label!==undefined)str(item.label);}
   }
   for (const board of s.boards) {
+    if (board.columnPreference != null && (!Number.isInteger(board.columnPreference)
+      || board.columnPreference < 1 || board.columnPreference > MAX_COLUMNS)) fail();
     if (board.layouts === undefined) continue;
     if (!board.layouts || typeof board.layouts !== 'object' || Array.isArray(board.layouts)) fail();
     const cards = new Set(s.cards.filter(card => card.boardId === board.id).map(card => card.id));
     for (const [count, columns] of Object.entries(board.layouts)) {
-      if (!/^[1-5]$/.test(count) || !Array.isArray(columns) || columns.length !== Number(count)
+      if (!/^[1-8]$/.test(count) || !Array.isArray(columns) || columns.length !== Number(count)
           || !columns.every(Array.isArray)) fail();
       const ids = columns.flat();
       if (ids.length !== cards.size || new Set(ids).size !== cards.size || !ids.every(id => cards.has(id))) fail();
@@ -96,7 +106,7 @@ export function moveCardToColumnEnd(state, boardId, count, cardId, destination) 
 }
 
 export function moveInColumns(state, boardId, count, cardId, destination, beforeId) {
-  if (!Number.isInteger(count) || count<1 || count>5
+  if (!Number.isInteger(count) || count<1 || count>MAX_COLUMNS
       || !Number.isInteger(destination) || destination<0 || destination>=count) throw Error('Column not found.');
   const board = state.boards.find(board=>board.id===boardId);
   const card = state.cards.find(card=>card.id===cardId && card.boardId===boardId);
