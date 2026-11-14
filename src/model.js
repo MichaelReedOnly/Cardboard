@@ -1,5 +1,11 @@
 export const clone = value => structuredClone(value);
 export const MAX_COLUMNS = 8;
+export const MIN_CARD_TEXT = 12;
+export const MAX_CARD_TEXT = 22;
+
+export function cardTextSize(board, count, columnWidth) {
+  return board.cardTextSizes?.[count] ?? Math.max(MIN_CARD_TEXT, Math.min(16, Math.round(columnWidth / 18)));
+}
 
 export function displayColumnCount(preference, visibleCount, width) {
   if (preference != null) return preference;
@@ -36,6 +42,14 @@ export function validateState(s) {
     for(const item of c.items){id(item.id);str(item.text);if(typeof item.done!=='boolean')fail();if(item.label!==undefined)str(item.label);}
   }
   for (const board of s.boards) {
+    if (board.cardTextSizes !== undefined) {
+      const sizes = board.cardTextSizes;
+      if (!sizes || typeof sizes !== 'object' || Array.isArray(sizes)) fail();
+      for (const [count, size] of Object.entries(sizes)) {
+        if (!/^[1-8]$/.test(count) || !Number.isInteger(size)
+            || size < MIN_CARD_TEXT || size > MAX_CARD_TEXT) fail();
+      }
+    }
     if (board.columnPreference != null && (!Number.isInteger(board.columnPreference)
       || board.columnPreference < 1 || board.columnPreference > MAX_COLUMNS)) fail();
     if (board.layouts === undefined) continue;

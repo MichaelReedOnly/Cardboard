@@ -1,6 +1,6 @@
 import {LocalBoardRepository} from './storage.js';
 import {createSeed} from './seed.js';
-import {balanceColumns,clone,displayColumnCount,getColumns,MAX_COLUMNS,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts} from './model.js';
+import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts} from './model.js';
 
 const paths={search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
 function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',paths[name]||paths.note);svg.append(p);return svg;}
@@ -33,7 +33,44 @@ auto.setAttribute('aria-label','Automatic column count');
 columnControls.append(fewer,countOutput,more);
 const columnRow = el('div','quick-column-row');
 columnRow.append(columnControls,auto);
-quickActions.append(newCardAction,columnRow,button('Close quick actions','quick-close',()=>quickActions.close(),'close'));
+const textControls = el('div','quick-text-controls');
+const textLabel = el('label','', 'Card text size');
+textLabel.htmlFor = 'card-text-size';
+const textSlider = el('input');
+textSlider.id = 'card-text-size';
+textSlider.type = 'range';
+textSlider.min = MIN_CARD_TEXT;
+textSlider.max = MAX_CARD_TEXT;
+textSlider.step = 1;
+const textValue = el('span','text-size-value');
+textValue.setAttribute('aria-hidden','true');
+const resetText = button('Auto text','quick-pill auto-columns',()=>saveTextSize(null));
+textControls.append(textLabel,textValue,textSlider,resetText);
+quickActions.append(newCardAction,columnRow,textControls,button('Close quick actions','quick-close',()=>quickActions.close(),'close'));
+
+function previewTextSize(grid,size) {
+  grid.style.setProperty('--card-text',`${size / 16}rem`);
+  textValue.textContent = `${size}`;
+  textSlider.setAttribute('aria-valuetext',`Size ${size}`);
+}
+
+async function saveTextSize(size) {
+  const grid = app.querySelector('.board');
+  const count = Number(grid.dataset.columns);
+  const activeBoardId = boardId;
+  const saved = await change(next=>{
+    const board = next.boards.find(board=>board.id===activeBoardId);
+    if (size === null) {
+      if (board.cardTextSizes) delete board.cardTextSizes[count];
+    } else {
+      (board.cardTextSizes ??= {})[count] = size;
+    }
+  });
+  if (!saved) render();
+}
+
+textSlider.oninput = () => previewTextSize(app.querySelector('.board'),textSlider.valueAsNumber);
+textSlider.onchange = () => saveTextSize(textSlider.valueAsNumber);
 quickActions.addEventListener('close',()=>{
   if (!editor.open) app.querySelector('.fab')?.focus();
 });
@@ -140,6 +177,11 @@ function render(){
  fab.setAttribute('aria-controls',quickActions.id);
  app.append(grid,fab,el('div','footer saved',`${state.cards.filter(c=>c.boardId===boardId).length} cards · Saved on this device`));
  const columnWidth = columns[0].getBoundingClientRect().width;
+ const board = state.boards.find(board=>board.id===boardId);
+ const textSize = cardTextSize(board,count,columnWidth);
+ textSlider.value = textSize;
+ resetText.setAttribute('aria-pressed',String(board.cardTextSizes?.[count] == null));
+ previewTextSize(grid,textSize);
  if (columnWidth > 0 && columnWidth < 210) {
    grid.classList.add('compact-columns');
    grid.style.setProperty('--card-scale',columnWidth/210);
