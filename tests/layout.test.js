@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {displayColumnCount, getColumns, moveCardToColumnEnd, reconcileLayouts} from '../src/model.js';
+import {displayColumnCount, getColumns, moveCardToColumnEnd, reconcileLayouts, swapCardsInColumns} from '../src/model.js';
 import {LocalBoardRepository} from '../src/storage.js';
 
 function board() {
@@ -9,6 +9,29 @@ function board() {
       id, boardId:'b', title:id, type:'note', pinned:id==='p', body:'', items:[], date:'', projectId:null
     }))};
 }
+
+test('swapping cards across columns exchanges only their slots and persists',async()=>{
+  const state=board();
+  const twoColumns=getColumns(state,'b',2);
+  state.boards[0].layouts[2]=twoColumns;
+  assert.equal(swapCardsInColumns(state,'b',3,'a','c'),true);
+  const expected=[['p','c','b1'],['a'],[]];
+  assert.deepEqual(getColumns(state,'b',3),expected);
+  assert.deepEqual(getColumns(state,'b',2),twoColumns);
+  let raw=null;
+  const repository=new LocalBoardRepository({getItem:()=>raw,setItem:(_,value)=>{raw=value;}},board());
+  await repository.save(state);
+  assert.deepEqual(getColumns(await repository.load(),'b',3),expected);
+});
+
+test('same-column swaps preserve neighboring cards and the pinned boundary',()=>{
+  const state=board();
+  assert.equal(swapCardsInColumns(state,'b',3,'a','b1'),true);
+  const expected=[['p','b1','a'],['c'],[]];
+  assert.throws(()=>swapCardsInColumns(state,'b',3,'a','p'),/same pinned group/);
+  assert.equal(swapCardsInColumns(state,'b',3,'a','a'),false);
+  assert.deepEqual(getColumns(state,'b',3),expected);
+});
 
 test('Auto uses visible cards and width while a manual count remains exact',()=>{
   assert.equal(displayColumnCount(null,2,1200),2);

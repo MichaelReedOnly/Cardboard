@@ -2,6 +2,16 @@ export const clone = value => structuredClone(value);
 export const MAX_COLUMNS = 8;
 export const MIN_CARD_TEXT = 12;
 export const MAX_CARD_TEXT = 22;
+export const POST_IT_COLORS = Object.freeze({
+  amber: '#ffd75e',
+  magenta: '#ffa3be',
+  cobalt: '#8fc5f7',
+  lime: '#c7e59b',
+  purple: '#c6b8f7',
+  red: '#ffa79e',
+  green: '#8fe0b0',
+  slate: '#d2d2d8',
+});
 
 export function cardTextSize(board, count, columnWidth) {
   return board.cardTextSizes?.[count] ?? Math.max(MIN_CARD_TEXT, Math.min(16, Math.round(columnWidth / 18)));
@@ -35,7 +45,9 @@ export function validateState(s) {
   for(const p of s.projects){id(p.id);str(p.name);if(!p.name.trim()||!boards.has(p.boardId))fail();}
   for(const c of s.cards){
     id(c.id);str(c.title);str(c.body);str(c.date);
-    if(!c.title.trim()||!boards.has(c.boardId)||!['note','checklist','week','link'].includes(c.type)||typeof c.pinned!=='boolean'||!Array.isArray(c.items))fail();
+    if(!c.title.trim()||!boards.has(c.boardId)||!['note','checklist','week','link','post-it'].includes(c.type)||typeof c.pinned!=='boolean'||!Array.isArray(c.items))fail();
+    if (c.postItColor !== undefined && (typeof c.postItColor !== 'string' || !Object.hasOwn(POST_IT_COLORS,c.postItColor))) fail();
+    if (c.postItAlignment !== undefined && !['left','center'].includes(c.postItAlignment)) fail();
     if(c.date && (!/^\d{4}-\d{2}-\d{2}$/.test(c.date)||Number.isNaN(Date.parse(c.date))))fail();
     if(c.projectId!==null&&!s.projects.some(p=>p.id===c.projectId&&p.boardId===c.boardId))fail();
     if(c.url!==undefined){str(c.url);if(c.url){try{const u=new URL(c.url);if(!['https:','http:'].includes(u.protocol)||!u.hostname)fail();}catch{fail();}}}
@@ -73,7 +85,8 @@ export function balanceColumns(cards, count) {
     columns[index].push(card.id);
     heights[index] += 130 + card.body.length * .34
       + card.items.reduce((height, item) => height + Math.max(43, item.text.length * .6), 0)
-      + (card.type === 'week' ? 100 : 0);
+      + (card.type === 'week' ? 100 : 0)
+      + (card.type === 'post-it' ? 200 : 0);
   }
   return columns;
 }
@@ -117,6 +130,22 @@ export function reconcileLayouts(state) {
 
 export function moveCardToColumnEnd(state, boardId, count, cardId, destination) {
   return moveInColumns(state, boardId, count, cardId, destination);
+}
+
+export function swapCardsInColumns(state, boardId, count, sourceId, targetId) {
+  if (!Number.isInteger(count) || count < 1 || count > MAX_COLUMNS) throw Error('Column not found.');
+  const board = state.boards.find(board => board.id === boardId);
+  const cards = state.cards.filter(card => card.boardId === boardId);
+  const source = cards.find(card => card.id === sourceId);
+  const target = cards.find(card => card.id === targetId);
+  if (!board || !source || !target) throw Error('Card not found on this board.');
+  if (source.pinned !== target.pinned) throw Error('Swap cards within the same pinned group.');
+  if (sourceId === targetId) return false;
+
+  const columns = getColumns(state, boardId, count);
+  (board.layouts ??= {})[count] = columns.map(column =>
+    column.map(id => id === sourceId ? targetId : id === targetId ? sourceId : id));
+  return true;
 }
 
 export function moveInColumns(state, boardId, count, cardId, destination, beforeId) {

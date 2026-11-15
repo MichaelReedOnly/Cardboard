@@ -1,6 +1,6 @@
 import {LocalBoardRepository} from './storage.js';
 import {createSeed} from './seed.js';
-import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts} from './model.js';
+import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,POST_IT_COLORS,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts,swapCardsInColumns} from './model.js';
 
 const paths={search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
 function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',paths[name]||paths.note);svg.append(p);return svg;}
@@ -166,7 +166,7 @@ function render(){
    const column = el('section','column');
    column.setAttribute('aria-label',`Column ${index+1}`);
    for (const id of ids) {
-     if (visible.has(id)) column.append(renderCard(visible.get(id),count,index));
+     if (visible.has(id)) column.append(renderCard(visible.get(id),count));
    }
    if (manual) column.append(columnDropTarget(count,index));
    return column;
@@ -188,9 +188,9 @@ function render(){
  }
  if(focusSearch){const input=document.querySelector('#search');input?.focus();try{input?.setSelectionRange(cursor,cursor);}catch{}}
 }
-function renderCard(c,count,columnIndex){
+function renderCard(c,count){
  const card=el('article',`card ${c.type}`);card.dataset.id=c.id;card.draggable=sort==='manual';card.setAttribute('aria-label',c.title);
- const canDropBefore = () => dragId && dragId!==c.id
+ const canSwap = () => dragId && dragId!==c.id
    && state.cards.some(card=>card.id===dragId && card.pinned===c.pinned);
  card.ondragstart = event => {
    if (sort!=='manual' || event.target.closest('button,a')) {
@@ -204,14 +204,14 @@ function renderCard(c,count,columnIndex){
    if (!c.pinned) app.classList.add('drag-active');
  };
  card.ondragend = endDrag;
- card.ondragover = event => acceptDrop(event,canDropBefore());
+ card.ondragover = event => acceptDrop(event,canSwap());
  card.ondragleave = () => card.classList.remove('drag-over');
  card.ondrop = event => {
-   if (!canDropBefore() || count!==columnCount()) return;
+   if (!canSwap() || count!==columnCount()) return;
    event.preventDefault();
    const cardId = dragId;
    endDrag();
-   change(next=>moveInColumns(next,boardId,count,cardId,columnIndex,c.id),'Card moved');
+   change(next=>swapCardsInColumns(next,boardId,count,cardId,c.id),'Cards swapped');
  };
  const top=el('div','card-top');const head=el('div','card-header');const type=c.id==='today'?'sun':c.type==='week'?'calendar':c.type==='link'?'link':'note';const badge=el('span',`card-icon ${type}`);badge.append(icon(type));const h=el('h2','card-title',c.title);head.append(badge,h);head.onclick=()=>openEditor(c.id);top.append(head);const p=state.projects.find(p=>p.id===c.projectId);top.append(el('p','subtitle',p?.name||(c.type==='week'?'Three things a day. No more.':c.type==='link'?'Save a page. See it at a glance.':c.type==='checklist'?'A little progress, one thing at a time.':'')));card.append(top);
  if(c.pinned){const pin=el('span','pin-mark');pin.title='Pinned';pin.append(icon('pin'));card.append(pin);}
@@ -221,7 +221,14 @@ function renderCard(c,count,columnIndex){
    card.append(button('＋ Add an item','add-item',()=>openEditor(c.id)));
  }else{
    if(c.type==='link'&&c.url){const link=el('a','link-preview');link.href=c.url;link.target='_blank';link.rel='noopener noreferrer';link.append(el('small','',new URL(c.url).hostname),el('strong','',c.url));card.append(link,el('div','section-label','WHY I SAVED IT'));}
-   card.append(el('div','note-body',c.body||'A little space for a thought…'));
+   if (c.type === 'post-it') {
+     const surface = el('div','post-it-surface');
+     stylePostIt(surface,c.postItColor,c.postItAlignment);
+     surface.append(el('div','post-it-copy',c.body || 'What’s on your mind?'));
+     card.append(surface);
+   } else {
+     card.append(el('div','note-body',c.body||'A little space for a thought…'));
+   }
  }
  if(c.date){const date=el('div','date-tag');date.append(icon('calendar'),document.createTextNode(c.date===dateKey()?'Today':c.date===dateKey(1)?'Tomorrow':new Date(`${c.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})));card.append(date);}
  const tools=el('div','card-tools');tools.append(button(`Edit ${c.title}`,'',()=>openEditor(c.id)));const group=el('div');group.append(button(c.pinned?`Unpin ${c.title}`:`Pin ${c.title}`,'',()=>change(s=>{const x=s.cards.find(x=>x.id===c.id);x.pinned=!x.pinned;}), 'pin'),button(`Move ${c.title} earlier`,'',()=>moveEarlier(c),'up'));tools.append(group);
@@ -245,21 +252,78 @@ function moveEarlier(card) {
 }
 function dialogHead(dialog,title){dialog.replaceChildren();dialog.setAttribute('aria-label',title);const head=el('div','dialog-head');head.append(el('h2','',title),button('Close','icon-button close',()=>dialog.close(),'close'));dialog.append(head);}
 function field(form,label,name,value,tag='input',options){const wrap=el('label','field',label);const input=el(tag);input.name=name;if(tag==='select')for(const [v,t]of options){const o=el('option','',t);o.value=v;input.append(o);}input.value=value??'';wrap.append(input);form.append(wrap);return input;}
+function stylePostIt(surface, color = 'amber', alignment = 'left') {
+  surface.style.setProperty('--post-it-color',POST_IT_COLORS[color]);
+  surface.style.textAlign = alignment;
+}
+
+function postItEditor(card, body) {
+  let color = card.postItColor ?? 'amber';
+  let alignment = card.postItAlignment ?? 'left';
+  const panel = el('div','post-it-editor');
+  const surface = el('div','post-it-surface');
+  const writing = el('textarea','post-it-writing');
+  writing.rows = 1;
+  writing.value = body.value;
+  writing.placeholder = 'What’s on your mind?\nWrite it here.';
+  writing.setAttribute('aria-label','Post-it text');
+  const sizing = el('div','post-it-sizing');
+  sizing.setAttribute('aria-hidden','true');
+  const writingArea = el('div','post-it-writing-area');
+  writingArea.append(sizing,writing);
+  surface.append(writingArea);
+
+  const colors = el('div','post-it-options');
+  const alignments = el('div','post-it-options');
+  colors.setAttribute('role','group');
+  colors.setAttribute('aria-label','Post-it color');
+  alignments.setAttribute('role','group');
+  alignments.setAttribute('aria-label','Post-it alignment');
+  const swatches = Object.entries(POST_IT_COLORS).map(([name,hex])=>{
+    const swatch = button(name,'post-it-swatch',()=>{ color = name; update(); });
+    swatch.title = name;
+    swatch.style.setProperty('--swatch-color',hex);
+    colors.append(swatch);
+    return [name,swatch];
+  });
+  const alignmentButtons = ['left','center'].map(name=>{
+    const control = button(name==='left'?'Left':'Center','post-it-align',()=>{ alignment = name; update(); });
+    alignments.append(control);
+    return [name,control];
+  });
+  function update() {
+    stylePostIt(surface,color,alignment);
+    for (const [name,swatch] of swatches) swatch.setAttribute('aria-pressed',String(name===color));
+    for (const [name,control] of alignmentButtons) control.setAttribute('aria-pressed',String(name===alignment));
+  }
+  function updateWriting() {
+    sizing.textContent = (writing.value || writing.placeholder) + '\u200b';
+  }
+  writing.oninput = () => { body.value = writing.value; updateWriting(); };
+  body.addEventListener('input',()=>{ writing.value = body.value; updateWriting(); });
+  panel.append(surface,colors,alignments);
+  update();
+  updateWriting();
+  return {panel, values:()=>({postItColor:color,postItAlignment:alignment})};
+}
+
 function openEditor(id){
  const existing=state.cards.find(c=>c.id===id);const c=existing||{id:crypto.randomUUID(),title:'',type:'note',projectId:filter&&state.projects.some(p=>p.id===filter)?filter:null,date:filter==='today'?dateKey():filter==='tomorrow'?dateKey(1):'',pinned:false,body:'',items:[],boardId};
- dialogHead(editor,existing?'Your card':'A new card');const form=el('form');const title=field(form,'Title','title',c.title);title.required=true;title.maxLength=200;field(form,'Card type','type',c.type,'select',[['note','Note'],['checklist','Checklist'],['week','Week planner'],['link','Link']]);
+ dialogHead(editor,existing?'Your card':'A new card');const form=el('form');const title=field(form,'Title','title',c.title);title.required=true;title.maxLength=200;field(form,'Card type','type',c.type,'select',[['note','Note'],['checklist','Checklist'],['week','Week planner'],['link','Link'],['post-it','Post-it']]);
  const row=el('div','field-row');field(row,'Project','projectId',c.projectId||'','select',[['','No project'],...state.projects.filter(p=>p.boardId===boardId).map(p=>[p.id,p.name])]);const date=field(row,'Date','date',c.date);date.type='date';form.append(row);
  const body=field(form,'Notes','body',c.body,'textarea');body.placeholder='Write it down. Make a little space.';
+ const postIt = postItEditor(c,body);
+ form.append(postIt.panel);
  const list=field(form,'Checklist · one item per line','items',c.items.map(i=>(c.type==='week'?`${i.label||''} | `:'')+i.text.replaceAll('\n',' ⏎ ')).join('\n'),'textarea');list.className='checklist-editor';
  const listHint=el('p','hint','Week planner: use “Mon | Your plan”. Use ⏎ for a line break within an item.');form.append(listHint);
  const url=field(form,'Link address','url',c.url||'');url.type='url';url.placeholder='https://';
- const updateType=()=>{const type=form.elements.type.value;list.parentElement.hidden=!['week','checklist'].includes(type);listHint.hidden=type!=='week';url.parentElement.hidden=type!=='link';url.required=false;};form.elements.type.onchange=updateType;updateType();
+ const updateType=()=>{const type=form.elements.type.value;postIt.panel.hidden=type!=='post-it';body.parentElement.hidden=type==='post-it';list.parentElement.hidden=!['week','checklist'].includes(type);listHint.hidden=type!=='week';url.parentElement.hidden=type!=='link';url.required=false;};form.elements.type.onchange=updateType;updateType();
  const pinLabel=el('label','form-check');const pin=el('input');pin.type='checkbox';pin.checked=c.pinned;pinLabel.append(pin,document.createTextNode('Pin to the top'));form.append(pinLabel);
  const error=el('p','error');error.setAttribute('role','alert');form.append(error);const actions=el('div','dialog-actions');
  if(existing)actions.append(button('Delete card','danger',()=>confirmDelete(c)));actions.append(button('Cancel','secondary',()=>editor.close()));const save=el('button','primary','Save card');save.type='submit';actions.append(save);form.append(actions);
  form.onsubmit=async e=>{e.preventDefault();if(!title.value.trim()){error.textContent='Give your card a title.';return;}if(url.value&&!/^https?:\/\//i.test(url.value)){error.textContent='Use an https:// or http:// address.';return;}
   const type=form.elements.type.value;
-  const updated={...c,title:title.value.trim(),type,projectId:form.elements.projectId.value||null,date:date.value,body:body.value,pinned:pin.checked,url:type==='link'?url.value:'',items:['week','checklist'].includes(type)?parseItems(list.value,type,c.items):[]};
+  const updated={...c,...(type==='post-it'?postIt.values():{}),title:title.value.trim(),type,projectId:form.elements.projectId.value||null,date:date.value,body:body.value,pinned:pin.checked,url:type==='link'?url.value:'',items:['week','checklist'].includes(type)?parseItems(list.value,type,c.items):[]};
   save.disabled=true;const ok=await change(s=>{const i=s.cards.findIndex(x=>x.id===c.id);if(i<0)s.cards.push(updated);else s.cards[i]=updated;},'Card saved');save.disabled=false;if(ok)editor.close();else error.textContent='Could not save. Your changes are still here; try again.';
  };editor.append(form);editor.showModal();title.focus();
 }

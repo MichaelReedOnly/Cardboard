@@ -4,6 +4,27 @@ import { LocalBoardRepository } from '../src/storage.js';
 import { moveCard, validateState, parseItems } from '../src/model.js';
 const initial = () => ({version:1,boards:[{id:'b',name:'All'}],projects:[],cards:[{id:'a',boardId:'b',title:'First',type:'note',projectId:null,date:'',pinned:false,items:[],body:'hello'},{id:'c',boardId:'b',title:'Second',type:'note',projectId:null,date:'',pinned:false,items:[],body:''}]});
 function memory(){const m=new Map();return {getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v)};}
+test('Post-it text and styling survive backup and restore', async()=>{
+  const state = initial();
+  Object.assign(state.cards[0], {type:'post-it', body:'First line\nSecond line',
+    postItColor:'lime', postItAlignment:'center'});
+  const repo = new LocalBoardRepository(memory(),initial());
+  await repo.save(state);
+  const restored = new LocalBoardRepository(memory(),initial());
+  await restored.importJSON(await repo.exportJSON());
+  assert.deepEqual(await restored.load(),state);
+});
+
+test('Post-it styling is optional and invalid styles are rejected',()=>{
+  const state = initial();
+  state.cards[0].type = 'post-it';
+  assert.doesNotThrow(()=>validateState(state));
+  state.cards[0].postItColor = 'constructor';
+  assert.throws(()=>validateState(state));
+  state.cards[0].postItColor = 'amber';
+  state.cards[0].postItAlignment = 'right';
+  assert.throws(()=>validateState(state));
+});
 test('saved edits survive a new repository instance',async()=>{const store=memory();const repo=new LocalBoardRepository(store,initial());let s=await repo.load();s.cards[0].title='Changed';await repo.save(s);assert.equal((await new LocalBoardRepository(store,initial()).load()).cards[0].title,'Changed');});
 test('reads are isolated from unsaved edits',async()=>{const repo=new LocalBoardRepository(memory(),initial());const s=await repo.load();s.cards[0].title='Unsaved';assert.equal((await repo.load()).cards[0].title,'First');});
 test('invalid imports preserve existing data',async()=>{const repo=new LocalBoardRepository(memory(),initial());await repo.save(initial());const bad=initial();bad.cards[0].boardId='missing';await assert.rejects(()=>repo.importJSON(JSON.stringify(bad)));assert.equal((await repo.load()).cards[0].boardId,'b');});
