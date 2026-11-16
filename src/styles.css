@@ -106,7 +106,13 @@
     font-size: max(.75rem, calc(var(--card-text, .75rem) * .86));
     overflow-wrap: anywhere;
   }
-  & .week-label { height: auto; width: auto; flex: 0 1 3ch; min-width: 0; }
+  & .week-label {
+    height: auto;
+    width: auto;
+    flex: 0 0 auto;
+    min-width: 3ch;
+    white-space: nowrap;
+  }
 }
 .board.compact-columns :is(.card-header,.check-row) { flex-wrap: wrap; }
 .board.compact-columns .item-text { flex-basis: 65%; }
