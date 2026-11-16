@@ -2,6 +2,84 @@ export const clone = value => structuredClone(value);
 export const MAX_COLUMNS = 8;
 export const MIN_CARD_TEXT = 12;
 export const MAX_CARD_TEXT = 22;
+const PROJECT_COLORS = ['#ffd75e','#9bc8eb','#7399ff','#ffa3be','#c7e59b','#c6b8f7','#ffa79e','#8fe0b0'];
+const projectNameKey = name => name.trim().toLowerCase();
+
+export function nextProjectColor(projects) {
+  const used = new Set(projects.map(project=>project.color));
+  const paletteColor = PROJECT_COLORS.find(color=>!used.has(color));
+  if (paletteColor) return paletteColor;
+  for (let index=0; index<0x1000000; index++) {
+    const color = '#' + ((index * 0x9e3779 + 0xbdd7ee) % 0x1000000).toString(16).padStart(6,'0');
+    if (!used.has(color)) return color;
+  }
+  throw Error('No project colors are available.');
+}
+
+export function setProjectName(projects,name,exceptId) {
+  const trimmed = name.trim();
+  if (!trimmed) throw Error('Enter a project name.');
+  if (projects.some(project=>project.id!==exceptId && projectNameKey(project.name)===projectNameKey(trimmed))) {
+    throw Error('A project with that name already exists.');
+  }
+  return trimmed;
+}
+
+export function deleteProject(state,id) {
+  state.projects = state.projects.filter(project=>project.id!==id);
+  for (const card of state.cards) {
+    if (card.projectId===id) card.projectId=null;
+  }
+}
+
+export function matchesProject(card,selection) {
+  return selection===null || selection.has(card.projectId);
+}
+
+export function migrateProjects(input) {
+  const state = clone(input);
+  if (!Array.isArray(state?.projects)) return state;
+  const legacy = state.projects.filter(project=>project && Object.hasOwn(project,'boardId'));
+  if (!legacy.length) return state;
+  const ordered = state.projects.filter(project=>project && !Object.hasOwn(project,'boardId'));
+  const reserved = new Set(state.projects.filter(project=>typeof project?.name==='string').map(project=>projectNameKey(project.name)));
+  const used = new Set(ordered.filter(project=>typeof project.name==='string').map(project=>projectNameKey(project.name)));
+  if (!Array.isArray(state.boards) || !Array.isArray(state.cards)) return state;
+  for (const project of legacy) {
+    if (!state.boards.some(board=>board?.id===project.boardId) || typeof project.name!=='string' || !project.name.trim()) continue;
+    const base = project.name.trim();
+    let name = base;
+    if (used.has(projectNameKey(name))) {
+      let suffix = 2;
+      do {
+        name = `${base} (${suffix++})`;
+      } while (used.has(projectNameKey(name)) || reserved.has(projectNameKey(name)));
+    }
+    project.name = name;
+    project.color = nextProjectColor(ordered);
+    delete project.boardId;
+    ordered.push(project);
+    used.add(projectNameKey(name));
+  }
+  for (const card of state.cards) if (card?.type==='single-todo') card.projectId=null;
+  return state;
+}
+export const MAX_PHOTO_DATA_LENGTH = 650_000;
+
+export function isPhotoSource(value) {
+  if (typeof value !== 'string') return false;
+  if (value.startsWith('data:')) {
+    return value.length <= MAX_PHOTO_DATA_LENGTH
+      && /^data:image\/(?:jpeg|png|webp|gif|avif);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
+  }
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return !!url.hostname && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
 export const POST_IT_COLORS = Object.freeze({
   amber: '#ffd75e',
   magenta: '#ffa3be',
@@ -42,14 +120,29 @@ export function validateState(s) {
   const str = v => {if(typeof v !== 'string') fail();};
   for(const b of s.boards){id(b.id);str(b.name);if(!b.name.trim())fail();}
   const boards=new Set(s.boards.map(b=>b.id));
-  for(const p of s.projects){id(p.id);str(p.name);if(!p.name.trim()||!boards.has(p.boardId))fail();}
+  const names = new Set();
+  const colors = new Set();
+  for (const p of s.projects) {
+    id(p.id);
+    str(p.name);
+    const key = projectNameKey(p.name);
+    if (!key || names.has(key) || typeof p.color!=='string' || !/^#[0-9a-f]{6}$/.test(p.color)
+        || colors.has(p.color) || Object.hasOwn(p,'boardId')) fail();
+    names.add(key);
+    colors.add(p.color);
+  }
   for(const c of s.cards){
     id(c.id);str(c.title);str(c.body);str(c.date);
-    if(!c.title.trim()||!boards.has(c.boardId)||!['note','checklist','week','link','post-it'].includes(c.type)||typeof c.pinned!=='boolean'||!Array.isArray(c.items))fail();
+    if(!c.title.trim()||!boards.has(c.boardId)||!['note','checklist','week','link','post-it','photo','single-todo'].includes(c.type)||typeof c.pinned!=='boolean'||!Array.isArray(c.items))fail();
+    if (c.type === 'single-todo' && c.todoDone !== undefined && typeof c.todoDone !== 'boolean') fail();
+    if (c.type === 'photo') {
+      if (c.photoSubtitle !== undefined && (typeof c.photoSubtitle !== 'string' || c.photoSubtitle.length > 160)) fail();
+      if (c.photoSource !== undefined && c.photoSource !== '' && !isPhotoSource(c.photoSource)) fail();
+    }
     if (c.postItColor !== undefined && (typeof c.postItColor !== 'string' || !Object.hasOwn(POST_IT_COLORS,c.postItColor))) fail();
     if (c.postItAlignment !== undefined && !['left','center'].includes(c.postItAlignment)) fail();
     if(c.date && (!/^\d{4}-\d{2}-\d{2}$/.test(c.date)||Number.isNaN(Date.parse(c.date))))fail();
-    if(c.projectId!==null&&!s.projects.some(p=>p.id===c.projectId&&p.boardId===c.boardId))fail();
+    if (c.projectId!==null && (c.type==='single-todo' || !s.projects.some(p=>p.id===c.projectId))) fail();
     if(c.url!==undefined){str(c.url);if(c.url){try{const u=new URL(c.url);if(!['https:','http:'].includes(u.protocol)||!u.hostname)fail();}catch{fail();}}}
     for(const item of c.items){id(item.id);str(item.text);if(typeof item.done!=='boolean')fail();if(item.label!==undefined)str(item.label);}
   }
@@ -83,10 +176,14 @@ export function balanceColumns(cards, count) {
   for (const card of cards) {
     const index = heights.indexOf(Math.min(...heights));
     columns[index].push(card.id);
-    heights[index] += 130 + card.body.length * .34
-      + card.items.reduce((height, item) => height + Math.max(43, item.text.length * .6), 0)
-      + (card.type === 'week' ? 100 : 0)
-      + (card.type === 'post-it' ? 200 : 0);
+    if (card.type === 'single-todo') {
+      heights[index] += 65 + Math.min(40, card.body.length * .34);
+    } else {
+      heights[index] += 130 + card.body.length * .34
+        + card.items.reduce((height, item) => height + Math.max(43, item.text.length * .6), 0)
+        + (card.type === 'week' ? 100 : 0)
+        + (card.type === 'post-it' || card.type === 'photo' ? 200 : 0);
+    }
   }
   return columns;
 }

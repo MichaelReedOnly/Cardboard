@@ -4,6 +4,43 @@ import { LocalBoardRepository } from '../src/storage.js';
 import { moveCard, validateState, parseItems } from '../src/model.js';
 const initial = () => ({version:1,boards:[{id:'b',name:'All'}],projects:[],cards:[{id:'a',boardId:'b',title:'First',type:'note',projectId:null,date:'',pinned:false,items:[],body:'hello'},{id:'c',boardId:'b',title:'Second',type:'note',projectId:null,date:'',pinned:false,items:[],body:''}]});
 function memory(){const m=new Map();return {getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v)};}
+test('single to-do backup preserves completion and text beyond three lines',async()=>{
+  const state = initial();
+  const body = ['First line','Second line','Third line','Fourth line'].join('\n');
+  Object.assign(state.cards[0], {type:'single-todo',body,todoDone:true});
+  const repo = new LocalBoardRepository(memory(),initial());
+  await repo.importJSON(JSON.stringify(state));
+  assert.deepEqual(JSON.parse(await repo.exportJSON()).cards[0],state.cards[0]);
+  state.cards[0].todoDone = 'true';
+  await assert.rejects(()=>repo.save(state));
+  assert.equal((await repo.load()).cards[0].body,body);
+});
+test('Photo backups preserve a device image and a separate URL photo',async()=>{
+  const state = initial();
+  Object.assign(state.cards[0], {
+    type:'photo', photoSubtitle:'From my device', body:'A description',
+    photoSource:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII=',
+  });
+  Object.assign(state.cards[1], {
+    type:'photo', photoSubtitle:'From the web', photoSource:'https://example.com/photo.jpg',
+  });
+  const original = new LocalBoardRepository(memory(),initial());
+  await original.save(state);
+  const restored = new LocalBoardRepository(memory(),initial());
+  await restored.importJSON(await original.exportJSON());
+  assert.deepEqual(await restored.load(),state);
+});
+
+test('a backup with an invalid Photo source preserves the saved board',async()=>{
+  const repo = new LocalBoardRepository(memory(),initial());
+  const bad = initial();
+  bad.cards[0].type = 'photo';
+  for (const photoSource of ['javascript:alert(1)','data:image/svg+xml;base64,PHN2Zz4=', 'https://', 'https://user:pass@example.com/image.jpg']) {
+    bad.cards[0].photoSource = photoSource;
+    await assert.rejects(()=>repo.importJSON(JSON.stringify(bad)));
+  }
+  assert.deepEqual(await repo.load(),initial());
+});
 test('Post-it text and styling survive backup and restore', async()=>{
   const state = initial();
   Object.assign(state.cards[0], {type:'post-it', body:'First line\nSecond line',

@@ -9,6 +9,6 @@ http.createServer(async(req,res)=>{
   if(file==='/'||file==='/cards')file='/index.html';
   if(!(file==='/index.html'||/^\/src\/[\w.-]+\.(js|css)$/.test(file))){res.writeHead(404);res.end('Not found');return;}
   const data=await readFile(path.join(root,file));
-  res.writeHead(200,{'Content-Type':types[path.extname(file)]||'text/plain','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(data);
+  res.writeHead(200,{'Content-Type':types[path.extname(file)]||'text/plain','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https: http:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});res.end(data);
  }catch{res.writeHead(404);res.end('Not found');}
 }).listen(port,'127.0.0.1',()=>console.log(`Cardboard running at http://localhost:${port}`));

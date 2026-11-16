@@ -165,3 +165,90 @@
 .post-it-swatch[aria-pressed=true] { box-shadow: 0 0 0 2px white, 0 0 0 4px #1c1c1e; }
 .post-it-align { padding: 4px; }
 .post-it-align[aria-pressed=true] { color: #0059af; font-weight: 600; }
+
+.photo-preview {
+  border-radius: 13px;
+  overflow: hidden;
+  background: #ebebef;
+}
+.photo-preview img { display: block; width: 100%; height: auto; }
+.photo-placeholder {
+  aspect-ratio: 1.1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 4px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  color: #59595f;
+  font-size: var(--card-text, .875rem);
+}
+.photo-description { margin-top: 11px; }
+.photo .subtitle { overflow-wrap: anywhere; }
+.photo-editor .field { margin-block: 10px; }
+.photo-editor .photo-status { margin: 0; font-size: .875rem; color: #59595f; }
+.photo-editor .photo-status:empty { display: none; }
+.photo-editor input[type="file"] { min-width: 0; }
+
+.todo-row, .todo-editor-active {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+.todo-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  cursor: grab;
+  margin: 0;
+  font-size: var(--card-text, 1rem);
+  line-height: 1.35;
+  font-weight: 700;
+}
+.todo-check.check {
+  width: clamp(14px, 2vw, 28px);
+  height: auto;
+  aspect-ratio: 1;
+}
+.todo-editor-active {
+  padding: 12px;
+  margin-block: 12px;
+  background: #f2f2f7;
+  border-radius: 18px;
+}
+.todo-editor-active .field { margin: 0; }
+.todo-editor-active .todo-check { margin-top: 22px; width: 28px; }
+.todo-editor-active .field textarea {
+  field-sizing: content;
+  min-height: 3lh;
+  font-size: 1rem;
+  background: white;
+}
+@media (max-width: 740px) {
+  .compact-columns .todo-row { gap: 2px; }
+}
+
+.project-chip {
+  display: flex;
+  flex: none;
+  align-items: center;
+  background: white;
+  border-radius: 24px;
+}
+.project-options {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 34px;
+  margin-right: 3px;
+  border-radius: 50%;
+}
+.project-options:hover { background: #ebebef; }
+.project-options svg { width: 16px; height: 16px; }
+.card-project-field { min-width: 0; }
+.project-save-error:empty { display: none; }
