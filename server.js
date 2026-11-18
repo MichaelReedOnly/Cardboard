@@ -2,6 +2,9 @@ import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createClerkClient} from '@clerk/backend';
+import {createSessionVerifier, SessionError} from './backend/auth.js';
+import {createDatabasePool} from './backend/database.js';
+import {createWorkspaceHandler} from './backend/workspace-route.js';
 const root=process.cwd(),port=Number(process.env.PORT||4318);
 const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json'};
 const publishableKey = process.env.CLERK_PUBLISHABLE_KEY?.trim() ?? '';
@@ -18,6 +21,12 @@ try {
 } catch {}
 const clerkClient = clerkOrigin && validOrigin && /^sk_test_\S+$/.test(secretKey)
   ? createClerkClient({publishableKey,secretKey}) : null;
+const requireUserId = createSessionVerifier(clerkClient,origin);
+let databasePool;
+const handleWorkspace = createWorkspaceHandler(requireUserId,()=>{
+  databasePool ??= createDatabasePool();
+  return databasePool;
+});
 
 function json(res,status,body) {
   res.writeHead(status,{'Content-Type':types['.json'],'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
@@ -25,20 +34,12 @@ function json(res,status,body) {
 }
 
 async function verifySession(req,res) {
-  const authorization = req.headers.authorization;
-  if (!authorization || !/^Bearer \S+$/i.test(authorization)) {
-    return json(res,401,{error:'Sign-in required'});
-  }
-  if (!clerkClient) return json(res,503,{error:'Clerk server verification is not configured'});
   try {
-    const request = new Request(new URL('/api/me',origin),{headers:{authorization}});
-    const session = await clerkClient.authenticateRequest(request,{
-      authorizedParties:[origin],acceptsToken:'session_token',
-    });
-    const userId = session.isAuthenticated ? session.toAuth().userId : null;
-    return userId ? json(res,200,{userId}) : json(res,401,{error:'Invalid or expired session'});
-  } catch {
-    return json(res,503,{error:'Clerk session verification is unavailable'});
+    const userId = await requireUserId(req);
+    return json(res,200,{userId});
+  } catch (error) {
+    if (error instanceof SessionError) return json(res,error.status,{error:error.message});
+    return json(res,500,{error:'Session verification failed'});
   }
 }
 const appPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https: http:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
@@ -49,6 +50,7 @@ const previewPolicy = clerkOrigin
 http.createServer(async(req,res)=>{
  try{
   const url=new URL(req.url,'http://localhost');let file=decodeURIComponent(url.pathname);
+  if (file==='/api/workspace') return await handleWorkspace(req,res);
   if (file==='/api/me') {
    if (req.method==='GET') return await verifySession(req,res);
    res.setHeader('Allow','GET');
