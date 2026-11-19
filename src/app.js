@@ -1,5 +1,7 @@
 import {LocalBoardRepository} from './storage.js';
 import {createSeed} from './seed.js';
+import {startBoard} from './board-startup.js';
+import {mountAuthScreen} from './auth-view.js';
 import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,isPhotoSource,MAX_PHOTO_DATA_LENGTH,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,POST_IT_COLORS,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts,swapCardsInColumns,deleteProject,matchesProject,migrateProjects,nextProjectColor,setProjectName,validateState} from './model.js';
 
 const paths={photo:'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0 M6 21l8-8a2 2 0 0 1 3 0l4 4',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
@@ -651,6 +653,28 @@ function openSettings(mode='options'){
 }
 document.querySelector('#import-file').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file)return;if(file.size>5_000_000){toast('Choose a backup smaller than 5 MB.',true);return;}try{const text=await file.text();const parsed=JSON.parse(text);validateState(migrateProjects(parsed));dialogHead(settings,'Replace your local boards?');settings.append(el('p','hint',`Import ${parsed.cards.length} cards from “${file.name}”? This replaces all boards on this device.`));const actions=el('div','dialog-actions');actions.append(button('Cancel','secondary',()=>settings.close()),button('Import backup','primary',async()=>{if(busy)return;busy=true;try{state=await repository.importJSON(text);boardId=state.boards[0].id;resetFilters();render();settings.close();toast('Backup imported');}catch(err){showError(err);}finally{busy=false;}}));settings.append(actions);settings.showModal();}catch(err){toast(`Could not import: ${err.message}`,true);}};
 let resizeTimer;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(state)render();},150);});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&showSearch&&!editor.open&&!settings.open){showSearch=false;query='';render();}if((e.ctrlKey||e.metaKey)&&e.key==='k'&&!editor.open&&!settings.open){e.preventDefault();showSearch=true;render();document.querySelector('#search')?.focus();}});
-async function start(){try{repository=new LocalBoardRepository(window.localStorage,createSeed());state=await repository.load();await repository.save(state);boardId=state.boards[0].id;render();}catch(e){app.replaceChildren();const fatal=el('div','fatal');fatal.append(el('h1','','Your board needs attention'),el('p','error',e.message),el('p','hint','Storage may be blocked or full, or a saved file may be damaged. Your existing saved data has not been replaced. Check your browser storage settings, then reload.'));app.append(fatal);}}
+document.addEventListener('keydown',e=>{if(!state)return;if(e.key==='Escape'&&showSearch&&!editor.open&&!settings.open){showSearch=false;query='';render();}if((e.ctrlKey||e.metaKey)&&e.key==='k'&&!editor.open&&!settings.open){e.preventDefault();showSearch=true;render();document.querySelector('#search')?.focus();}});
+function clearPrivateState(){
+ repository=undefined;state=undefined;boardId=undefined;busy=false;dragId=null;
+ resetFilters();showSearch=false;clearTimeout(toastTimer);
+ document.querySelector('#toast').textContent='';document.querySelector('#toast').className='';
+ for(const dialog of [editor,settings,quickActions]){if(dialog.open)dialog.close();}
+ editor.replaceChildren();settings.replaceChildren();document.querySelector('#import-file').value='';
+}
+async function startLocalBoard(){repository=new LocalBoardRepository(window.localStorage,createSeed());state=await repository.load();await repository.save(state);boardId=state.boards[0].id;render();}
+let unmountAuth;
+async function start(){
+ unmountAuth?.();clearPrivateState();app.replaceChildren(el('p','fatal','Loading Cardboard…'));
+ try{
+  await startBoard({startLocal:startLocalBoard,startDatabase:()=>{
+   unmountAuth=mountAuthScreen(app,{onSessionChange:clearPrivateState});
+  }});
+ }catch{
+  clearPrivateState();const fatal=el('div','fatal');
+  fatal.append(el('h1','','Your board needs attention'),el('p','error','Cardboard could not load its configuration or saved board.'),el('p','hint','Check your connection and server configuration. Existing saved data has not been replaced.'),button('Retry','primary',start));
+  app.replaceChildren(fatal);
+ }
+}
+window.addEventListener('pagehide',()=>{if(unmountAuth){unmountAuth();clearPrivateState();}});
+window.addEventListener('pageshow',event=>{if(event.persisted)void start();});
 start();
