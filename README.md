@@ -35,7 +35,21 @@ Data persists in localStorage for this browser and origin. Browser data clearing
 
 `src/storage.js` is the only module that reads or writes browser storage. It exposes async `load()`, `save(state)`, `exportJSON()` and `importJSON(text)`. `src/app.js` injects the local repository at startup and calls these methods. A future HTTP adapter can implement the same contract and replace that constructor. The version-1 schema in `src/model.js` defines boards, projects and cards with stable IDs; checklist items also have stable IDs. `src/seed.js` supplies starter data. JSON exports are versioned.
 
-The current workspace API stores a complete validated snapshot per verified Clerk account with revision-based concurrency. The upcoming HTTP repository will implement the same asynchronous boundary. Granular operations and offline synchronization are outside the first database-backed release.
+The current workspace API stores a complete validated snapshot per verified Clerk account with revision-based concurrency. The HTTP repository implements the same asynchronous boundary; connecting it to the board is the next step. Granular operations and offline synchronization are outside the first database-backed release.
+
+### Authenticated API repository (Step 3.3.3)
+
+`src/api-storage.js` now implements `ApiBoardRepository`, with async `load()`, `save(state)`, `importJSON(text)` and `exportJSON()`. It is tested but intentionally not wired into board startup yet. Database mode still shows the integration-pending screen until Step 3.3.4.
+
+Construct it with `{auth, fetchImpl=fetch, requestTimeoutMs=30000}`, where `auth` is the shared verified authentication controller. Call `load()` before saving. An account without a workspace returns `null` at revision `"0"`; the adapter does not create sample cards or write during a read. Every HTTP request obtains a fresh token and sends it only in the Authorization header. It never supplies an owner ID or touches local storage.
+
+Operations are serialized. Each save uses the latest acknowledged revision as a string; revisions are compared using bigint. Successful responses are validated before replacing the acknowledged snapshot. UTF-8 JSON requests, including their wrapper, are limited to 5,000,000 bytes. Normal exports contain only the last acknowledged snapshot and do not fetch from the server; empty/unloaded workspaces cannot be exported.
+
+`ApiStorageError.kind` distinguishes `auth`, `session`, `validation`, `size`, `conflict`, `network`, `service`, `response`, `not-loaded`, `empty`, `reload-required` and `revision-limit`. Errors never echo server response bodies, tokens or raw network diagnostics. Conflicts and uncertain write results block later writes until a successful `load()`; PUT is never retried automatically. The default 30-second timeout covers token retrieval, transmission and response parsing.
+
+Read-only getters expose `revision`, `updatedAt`, `needsReload` and a defensive copy of `recoverySnapshot`. Recovery is the latest valid submitted candidate, including a queued edit that could not be sent. Reload keeps it for explicit review/reapplication; acknowledging that candidate clears it. The adapter serializes whole snapshots rather than merging concurrent edits. UI confirmations, conflict recovery controls and initial empty-board creation are later integration tasks.
+
+An authentication transition away from the bound verified account permanently invalidates the repository and cancels outstanding requests; late results cannot be adopted. Recovery is memory-only and is cleared with private state on invalidation or `dispose()`. The later UI must offer recovery before voluntary sign-out. Create a new repository after reauthentication. No draft or token is persisted by this adapter.
 
 ## Verify
 
