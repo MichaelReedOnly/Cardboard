@@ -9,6 +9,21 @@ export class InvalidWorkspaceError extends Error {
 
 export class WorkspaceInputError extends Error {}
 export class WorkspaceConflictError extends Error {}
+export class WorkspaceDatabaseError extends Error {
+  constructor(error) {
+    super('Workspace database is unavailable');
+    this.name = 'WorkspaceDatabaseError';
+    if (typeof error?.code === 'string' && /^[A-Z0-9_]{2,32}$/.test(error.code)) this.code = error.code;
+  }
+}
+
+async function queryWorkspace(pool,sql,parameters) {
+  try {
+    return await pool.query(sql,parameters);
+  } catch (error) {
+    throw new WorkspaceDatabaseError(error);
+  }
+}
 
 export function validateWorkspaceSave(input) {
   if (!input || typeof input.revision !== 'string'
@@ -26,11 +41,11 @@ export function validateWorkspaceSave(input) {
 export async function saveWorkspace(pool,userId,input) {
   const {snapshot,revision} = validateWorkspaceSave(input);
   const result = revision === '0'
-    ? await pool.query(
+    ? await queryWorkspace(pool,
       'INSERT INTO cardboard.workspaces(clerk_user_id,snapshot) VALUES ($1,$2) ON CONFLICT (clerk_user_id) DO NOTHING RETURNING snapshot,revision,updated_at',
       [userId,JSON.stringify(snapshot)]
     )
-    : await pool.query(
+    : await queryWorkspace(pool,
       'UPDATE cardboard.workspaces SET snapshot=$2,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE clerk_user_id=$1 AND revision=$3::bigint RETURNING snapshot,revision,updated_at',
       [userId,JSON.stringify(snapshot),revision]
     );
@@ -40,7 +55,7 @@ export async function saveWorkspace(pool,userId,input) {
 }
 
 export async function loadWorkspace(pool,userId) {
-  const result = await pool.query(
+  const result = await queryWorkspace(pool,
     'SELECT snapshot, revision, updated_at FROM cardboard.workspaces WHERE clerk_user_id = $1',
     [userId]
   );

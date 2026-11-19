@@ -55,6 +55,77 @@ function response() {
   };
 }
 
+function putBody(chunks,headers = {}) {
+  const req = Readable.from(chunks.map(chunk=>Buffer.from(chunk)));
+  req.method='PUT';
+  req.headers={'content-type':'application/json',...headers};
+  return req;
+}
+
+test('invalid and oversized uploads are rejected before database access and allow a subsequent valid save',async()=>{
+  let writes=0;
+  const events=[];
+  const handler=createWorkspaceHandler(async()=> 'verified',()=>({
+    async query() {
+      writes++;
+      return {rows:[{snapshot,revision:'1',updated_at}]};
+    }
+  }),entry=>events.push(entry));
+  const cases=[
+    [putBody(['{}'],{'content-type':'text/plain'}),415],
+    [putBody(['{}'],{'content-encoding':'gzip'}),415],
+    [putBody(['{}'],{'content-length':'5000001'}),413],
+    [putBody([Buffer.alloc(2_500_001,32),Buffer.alloc(2_500_000,32)]),413],
+    [putBody(['{}'],{'content-length':'3'}),400],
+    [putBody([Buffer.from([0xff])]),400],
+    [putBody([JSON.stringify({revision:'0',snapshot:{}})]),400],
+  ];
+  for(const [req,status] of cases) {
+    const res=response();
+    await handler(req,res);
+    assert.equal(res.status,status);
+    assert.equal(res.headers['Cache-Control'],'no-store');
+    assert.match(res.headers['X-Request-ID'],/^[0-9a-f-]{36}$/);
+  }
+  assert.equal(writes,0);
+  const res=response();
+  await handler(putBody([JSON.stringify({snapshot,revision:'0'})]),res);
+  assert.equal(res.status,200);
+  assert.equal(writes,1);
+  assert.equal(events.length,cases.length+1);
+});
+
+test('interrupted upload never reaches the database and clears its body listeners',async()=>{
+  const req=new Readable({read(){}});
+  req.method='PUT';
+  req.headers={'content-type':'application/json'};
+  const handler=createWorkspaceHandler(async()=> 'verified',()=>assert.fail('Unexpected database access'),()=>{});
+  const res=response();
+  const pending=handler(req,res);
+  setImmediate(()=>{
+    req.emit('aborted');
+    req.destroy(new Error('private upload details'));
+  });
+  await pending;
+  assert.equal(res.status,400);
+  assert.equal(req.listenerCount('data'),0);
+  assert.equal(req.listenerCount('aborted'),0);
+});
+
+test('diagnostics contain only request metadata and safe database codes',async()=>{
+  const logs=[];
+  const handler=createWorkspaceHandler(async()=> 'verified',()=>({
+    async query(){throw Object.assign(new Error('password and card contents'),{code:'08006'});}
+  }),entry=>logs.push(entry));
+  const res=response();
+  await handler({method:'GET',url:'/api/workspace?secret=hidden',headers:{authorization:'Bearer secret'}},res);
+  assert.equal(res.status,503);
+  assert.deepEqual(Object.keys(logs[0]).sort(),['databaseCode','method','requestId','route','status']);
+  assert.equal(logs[0].databaseCode,'08006');
+  assert.equal(logs[0].requestId,res.headers['X-Request-ID']);
+  assert.doesNotMatch(JSON.stringify(logs),/password|contents|hidden|Bearer/);
+});
+
 test('load returns an empty account without a database write',async()=>{
   const pool = {async query(sql,values) {
     assert.match(sql,/^SELECT /);
