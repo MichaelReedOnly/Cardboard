@@ -41,7 +41,7 @@ function httpError(status) {
 
 /** Account-bound asynchronous repository. No localStorage or automatic write retries. */
 export class ApiBoardRepository {
-  #auth; #fetch; #owner; #timeout; #unsubscribe;
+  #auth; #fetch; #owner; #sessionId; #timeout; #unsubscribe;
   #invalid=false; #loaded=false; #needsReload=false;
   #snapshot=null; #revision='0'; #updatedAt=null;
   #recovery=null; #candidateNumber=0;
@@ -53,9 +53,9 @@ export class ApiBoardRepository {
       throw new ApiStorageError('auth','A verified account is required to open a workspace.');
     }
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs<=0) throw Error('Invalid request timeout.');
-    this.#auth=auth;this.#fetch=fetchImpl;this.#owner=auth.state.userId;this.#timeout=requestTimeoutMs;
+    this.#auth=auth;this.#fetch=fetchImpl;this.#owner=auth.state.userId;this.#sessionId=auth.state.sessionId;this.#timeout=requestTimeoutMs;
     this.#unsubscribe=auth.subscribe(state=>{
-      if (state.status!=='verified' || state.userId!==this.#owner) this.#invalidate();
+      if (state.status!=='verified' || state.userId!==this.#owner || state.sessionId!==this.#sessionId) this.#invalidate();
     });
   }
 
@@ -65,7 +65,7 @@ export class ApiBoardRepository {
     this.#snapshot=null;this.#recovery=null;this.#loaded=false;
   }
   #assertActive() {
-    if (this.#invalid || this.#auth.state.status!=='verified' || this.#auth.state.userId!==this.#owner) {
+    if (this.#invalid || this.#auth.state.status!=='verified' || this.#auth.state.userId!==this.#owner || this.#auth.state.sessionId!==this.#sessionId) {
       this.#invalidate();
       throw new ApiStorageError('session','Session changed. Open the workspace again after sign-in.');
     }
@@ -94,6 +94,7 @@ export class ApiBoardRepository {
       // A timed-out token request must not transmit later when it eventually resolves.
       if (controller.signal.aborted) throw new ApiStorageError('network','Workspace request timed out.');
       if (!token) throw new ApiStorageError('auth','Sign in again before accessing your workspace.');
+      if(this.#auth.state.suspended)throw new ApiStorageError('auth','Verify your session before accessing the workspace.');
       // A browser's native fetch must not receive this repository as its receiver.
       const fetchWorkspace=this.#fetch;
       const response=await fetchWorkspace('/api/workspace',{
@@ -101,7 +102,10 @@ export class ApiBoardRepository {
         ...(body===undefined?{}:{body}),cache:'no-store',credentials:'omit',signal:controller.signal,
       });
       this.#assertActive();
-      if (!response.ok) throw httpError(response.status);
+      if (!response.ok) {
+        if([401,403].includes(response.status))this.#auth.rejectSession?.({userId:this.#owner,sessionId:this.#sessionId});
+        throw httpError(response.status);
+      }
       let result;
       try {result=await response.json();}
       catch {throw new ApiStorageError('response','The server returned an unreadable workspace. Reload before saving.');}
@@ -136,16 +140,20 @@ export class ApiBoardRepository {
     });
   }
 
-  async save(state) {
+  async save(state,{expectedRevision}={}) {
     this.#assertActive();
+    if(expectedRevision!==undefined && (typeof expectedRevision!=='string' || !/^(0|[1-9][0-9]{0,18})$/.test(expectedRevision) || BigInt(expectedRevision)>=MAX_REVISION)) {
+      throw new ApiStorageError('validation','Provide the checked destination revision as a decimal string.');
+    }
     const snapshot=cleanSnapshot(state),candidate=++this.#candidateNumber;
     this.#recovery=clone(snapshot);
     return this.#enqueue(async()=>{
       if (!this.#loaded) throw new ApiStorageError('not-loaded','Load the workspace before saving.');
       if (this.#needsReload) throw new ApiStorageError('reload-required','Load the latest workspace before trying another save. Your edit is retained for recovery.');
-      if (BigInt(this.#revision)>=MAX_REVISION) throw new ApiStorageError('revision-limit','This workspace has reached its revision limit.');
+      const writeRevision=expectedRevision===undefined?this.#revision:expectedRevision;
+      if (BigInt(writeRevision)>=MAX_REVISION) throw new ApiStorageError('revision-limit','This workspace has reached its revision limit.');
       let body;
-      try {body=JSON.stringify({revision:this.#revision,snapshot});}
+      try {body=JSON.stringify({revision:writeRevision,snapshot});}
       catch {throw new ApiStorageError('validation','The workspace could not be serialized.');}
       if (new TextEncoder().encode(body).byteLength>MAX_REQUEST_BYTES) {
         throw new ApiStorageError('size','The workspace request exceeds 5 MB. Your submitted edit is retained for recovery.');
@@ -153,7 +161,7 @@ export class ApiBoardRepository {
       try {
         const result=readEnvelope(await this.#request('PUT',body));
         this.#assertActive();
-        if (!result.snapshot || BigInt(result.revision)!==BigInt(this.#revision)+1n) {
+        if (!result.snapshot || BigInt(result.revision)!==BigInt(writeRevision)+1n) {
           throw new ApiStorageError('response','The server returned an unexpected save revision. Reload before saving.');
         }
         this.#snapshot=result.snapshot;this.#revision=result.revision;this.#updatedAt=result.updatedAt;
@@ -179,6 +187,12 @@ export class ApiBoardRepository {
     try {parsed=JSON.parse(text);}
     catch {throw new ApiStorageError('validation','That file is not valid JSON.');}
     return this.save(cleanSnapshot(parsed));
+  }
+  async clearRecovery() {
+    return this.#enqueue(()=>{
+      if(!this.#loaded || this.#needsReload)throw new ApiStorageError('reload-required','Load the latest workspace before clearing recovery data.');
+      this.#recovery=null;
+    });
   }
   dispose(){this.#invalidate();this.#unsubscribe?.();}
 }

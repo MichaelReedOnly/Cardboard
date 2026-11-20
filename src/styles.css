@@ -264,3 +264,14 @@
 .save-feedback p { margin: 0 0 10px; line-height: 1.4; }
 .save-feedback button { margin: 4px 8px 0 0; }
 .footer.saved { max-width: calc(100% - 110px); overflow-wrap: anywhere; }
+.inline-recovery { border-top: 1px solid #d2d2d8; padding-top: 12px; margin-top: 12px; }
+.inline-recovery button, .recovery-dialog button { margin: 4px 8px 4px 0; }
+.recovery-dialog { max-height: 85vh; overflow-y: auto; }
+.recovery-dialog p { line-height: 1.5; }
+.session-check-pending #app, .session-check-pending .save-feedback, .session-check-pending #toast,
+.session-check-pending dialog:not(.session-gate) { visibility: hidden !important; }
+.session-gate p { line-height: 1.5; }
+.session-gate button { margin: 4px 8px 4px 0; }
+.migration-dialog { max-height: 85vh; overflow-y: auto; }
+.migration-dialog p { line-height: 1.5; overflow-wrap: anywhere; }
+.migration-dialog button { margin: 4px 8px 4px 0; }

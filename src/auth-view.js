@@ -35,14 +35,16 @@ export function mountAuthScreen(root,{preview=false,onSessionChange=()=>{},onVer
     onSessionChange(state);
     if (state.status==='verified' && onVerified) {onVerified(auth,state);return;}
     const messages={loading:'Loading sign-in…','signed-out':'Use your invited email address to sign in.',
-      verifying:'Verifying your account…',verified:'Signed in. Cardboard verified your Clerk session.',error:state.message};
+      verifying:'Verifying your account…',verified:state.suspended?state.message:'Signed in. Cardboard verified your Clerk session.',error:state.message,expired:state.message};
     const panel=shell(messages[state.status]);
-    if (state.status==='verified') {
+    if (state.status==='verified' && !state.suspended) {
       panel.append(element('p',`Signed in as ${state.label}`,'auth-account'));
       if (!preview) panel.append(element('p','Your account is ready. Database board loading is coming in the next integration steps.','hint'));
     }
-    if (state.status==='signed-out') action(panel,'Sign in',()=>auth.signIn(returnUrl),true);
+    if (state.status==='expired' && !preview)panel.append(element('p','For privacy, unsaved changes in this page have been cleared. A downloaded recovery file can be imported after signing in.','hint'));
+    if (state.status==='signed-out'||state.status==='expired') action(panel,'Sign in',()=>auth.signIn(returnUrl),true);
     if (state.status==='error') action(panel,'Retry',()=>auth.refresh(),true);
+    if (state.status==='verified' && state.suspended) action(panel,'Retry',()=>auth.revalidate(),true);
     if (state.signedIn) action(panel,'Sign out',()=>auth.signOut(returnUrl));
   }
   async function connect() {

@@ -73,3 +73,26 @@ test('database mode serves the auth entry page with Clerk permissions and keeps 
   assert.equal((await fetch(base+'/api/workspace')).status,401);
   assert.equal((await fetch(base+'/.env')).status,404);
 });
+
+test('release smoke: complete browser module graph and styles are served, private files stay inaccessible',async t=>{
+  const base=await startServer(t),pending=['/src/app.js','/src/sign-in-preview.js'],visited=new Set();
+  while(pending.length){
+    const path=pending.pop();if(visited.has(path))continue;visited.add(path);
+    const response=await fetch(base+path);
+    assert.equal(response.status,200,`Missing browser dependency: ${path}`);
+    assert.match(response.headers.get('content-type'),/javascript/);
+    assert.equal(response.headers.get('cache-control'),'no-store');
+    const source=await response.text();
+    for(const match of source.matchAll(/(?:from\s*|import\s*)['"](\.\.?\/[^'"]+)['"]/g)){
+      const dependency=new URL(match[1],base+path);assert.equal(dependency.origin,base);
+      pending.push(dependency.pathname);
+    }
+  }
+  for(const module of ['workspace-migration','migration-view','session-lifecycle','recovery-view','api-storage'])assert.ok(visited.has(`/src/${module}.js`),`${module} must be reachable`);
+  const css=await fetch(base+'/src/styles.css');assert.equal(css.status,200);assert.match(css.headers.get('content-type'),/text\/css/);
+  for(const path of ['/.env','/.env.production','/.git/config','/app.cjs','/backend/database.js','/package-lock.json','/docs/verification.md'])assert.equal((await fetch(base+path)).status,404,path);
+  for(const method of ['GET','PUT']){
+    const response=await fetch(base+'/api/workspace',{method,...(method==='PUT'?{headers:{'Content-Type':'application/json'},body:'{}'}:{})});
+    assert.equal(response.status,401);
+  }
+});

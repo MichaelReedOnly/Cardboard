@@ -2,6 +2,8 @@
 
 A PAPEPPE-style planning board with separate local and authenticated database storage modes. The Node backend provides Clerk session verification and a revisioned, private PostgreSQL workspace API. Step 3.3.4 connects the board to that API; complete save/recovery controls and production rollout are later checkpoints.
 
+Release verification, deployment gates and rollback instructions are in [docs/release-readiness.md](docs/release-readiness.md). Outstanding browser and production checks are tracked in [docs/verification.md](docs/verification.md).
+
 ## Run
 
 Use Node.js 24 for development and deployment. Install dependencies with `npm install`. In this directory run `npm start` (or `node server.js`) for a standalone board without loading an environment file. With a configured `.env`, use `node app.cjs` or `node --env-file=.env server.js`. The tracked `app.cjs` loads `.env` next to the wrapper before importing the server; cPanel can use it as the startup file. Keep the working directory set to the application root.
@@ -59,9 +61,29 @@ An authentication transition away from the bound verified account permanently in
 
 The footer uses singular/plural card counts and distinguishes Not saved yet, Edits not saved, Saving, Saved to your account / Saved on this device, Not saved, Workspace changed elsewhere, and Save outcome unknown. A persistent accessible status region announces transitions. Existing local data initially uses the neutral Local browser storage label until an explicit save is acknowledged.
 
-A failed valid submission stays in memory and is displayed as unsaved board state; editor values remain open. Definite rejections offer explicit Retry save or corrected resubmission. Conflicts and uncertain results block further writes and offer Download unsaved changes; that version-1 JSON contains the retained full workspace. Normal exports still contain acknowledged storage data only. Latest-version reload/merge controls remain Step 3.3.6.
+A failed valid submission stays in memory and is displayed as unsaved board state; editor values remain open. Definite rejections offer explicit Retry save or corrected resubmission. Conflicts and uncertain results block ordinary writes and offer recovery review and Download unsaved changes; that version-1 JSON contains the retained full workspace. Normal exports still contain acknowledged storage data only.
 
 Editor input, photo removal, Post-it controls, to-do toggles and project assignment changes mark forms dirty. Closing a dirty editor, voluntary sign-out, and browser navigation warn about unsaved work. Browser close warnings depend on browser support and user interaction and cannot guarantee recovery. Download needed recovery data before leaving; forced expiry/account changes clear private memory rather than exposing it to another account. Unsubmitted form fields remain in the editor and are not included in a submitted-candidate download until Save is attempted.
+
+### Workspace recovery (Step 3.3.6)
+
+Review save recovery opens a separate modal, including from an open card/project editor. Check latest version performs an authenticated read and retains the submitted candidate. If its serialized JSON contents match the checked snapshot, the controller confirms their presence without resending a PUT. Object-key order is ignored; array order and values are preserved. This confirms presence at check time, not which earlier request wrote it. Existing unsubmitted editor fields remain open and dirty.
+
+When versions differ, the dialog shows board/project/card counts and revisions, then offers Use the latest saved version or Replace the latest version with my changes. Both require explicit confirmation. Using latest discards the retained submitted candidate and writes nothing; an absent workspace produces a new empty in-memory board. Replacement applies to the entire workspace, uses the checked revision, and can remove another device's work. An intervening write produces another conflict and requires another check, without retrying automatically.
+
+Choosing either version warns that additional editor values typed since the last submission are not included and will close only after success. Cancel keeps the editors intact. Failed checks/replacements retain the candidate. Recovery downloads remain available before choosing. No automatic merge or offline synchronization is implemented.
+
+The controller exposes async checkLatest(), useLatest({confirmed:true, revision}), and replaceLatest({confirmed:true, revision}) plus recoveryDetails metadata. Recovery operations participate in pending-control locking and account-lifetime guards. ApiBoardRepository.clearRecovery() is serialized, refuses clearing before a valid reload, and changes only in-memory recovery data. Current recovery choices must come from a successful check; stale confirmation revisions are rejected.
+
+### Session transitions (Step 3.3.7)
+
+Repositories are bound to both verified user and session IDs. Workspace HTTP 401/403 locks only the matching session, clears its private board/editor/save/recovery state through the shared auth flow, and prevents further requests from that repository. Rejected session identities are not automatically reverified by ordinary SDK notifications. Signing in again ends a rejected cached SDK session first; a new verified session gets a new repository. Stale responses cannot reject a newer session, even for the same user.
+
+Verification is bounded to 15 seconds, including token retrieval and response parsing. Known Clerk expiry/inactivity deadlines schedule a client-side lock. Server checks remain authoritative; client expiry timers do not replace backend ownership verification. Same-origin BroadcastChannel signals session end using only its non-token session ID; receivers affect only the matching session and do not echo the event. No credentials, user email, workspace snapshot or draft is broadcast. If the browser lacks BroadcastChannel, Clerk events and foreground checks remain available.
+
+Returning to a background tab or focusing it covers private UI, including open editors, until the same session is checked with a fresh token and `/api/me`. A temporary network/service failure keeps that tab's same-session memory behind the cover and blocks new requests; Retry restores access only after successful verification. Requests already transmitted may still complete. Definite expiry/rejection, sign-out, or account/session changes clear private memory; drafts are not retained across reauthentication, even for the same user. Download needed recovery data before voluntarily ending the session. Browser Back/Forward restoration starts authentication again before loading private content.
+
+Outstanding manual verification is maintained in [docs/verification.md](docs/verification.md), with completed checks recorded separately from pending and Production-deferred checks.
 
 ## Verify
 
@@ -70,3 +92,10 @@ Editor input, photo removal, Post-it controls, to-do toggles and project assignm
 `npm run check` — JavaScript syntax checks.
 
 The loopback-only server serves only the app entry and source assets, not the downloaded website-review material. The app is an independent implementation; original public bundles are retained in website-review for analysis only and are not loaded by the app.
+## Importing local cards into an account
+
+In database mode, open the account menu or **Your data** and choose **Import local cards into my account**. Cardboard reads saved local data only when you choose this action. Local cards belong to a browser and web address; to transfer from another address, browser or device, export a JSON backup there and use **Import a backup** here.
+
+The preview identifies the signed-in destination account and shows source and destination board, project and card counts. Download the original source and the checked account backup before continuing. An account with no saved workspace has no destination backup. Confirming replaces the entire account workspace; it does not merge cards. The original browser data and selected file remain unchanged.
+
+Save or recover open changes before importing. Invalid sources and payloads exceeding the 5 MB API limit cannot be submitted. The destination preview uses a separate repository, leaving the displayed board's revision unchanged. A confirmed replacement submits the checked revision; a newer account save causes a conflict and opens the existing recovery workflow. Imports are not automatically retried. Account or session changes cancel the workflow and clear its private preview.

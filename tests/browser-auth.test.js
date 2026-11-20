@@ -70,17 +70,18 @@ test('sign-out immediately removes identity even while verification is pending',
   auth.dispose();
 });
 
-test('verification failure and mismatched identity fail closed and allow retry',async()=>{
+test('service failure allows retry while mismatched identity requires a new verified session',async()=>{
   let result=response({error:'Invalid or expired session'},false);
-  const {auth,account}=fixture(async()=>result);
+  const {auth,account,clerk}=fixture(async()=>result);
   account('user_A');
   await auth.refresh();
   assert.equal(auth.state.status,'error');
   await assert.rejects(()=>auth.getToken(),/Sign-in required/);
   result=response({userId:'user_B'});
   await auth.refresh();
-  assert.equal(auth.state.status,'error');
+  assert.equal(auth.state.status,'expired');
   result=response({userId:'user_A'});
+  clerk.session={...clerk.session,id:'session_A2'};
   await auth.refresh();
   assert.equal(auth.state.status,'verified');
   auth.dispose();
@@ -154,7 +155,7 @@ test('equivalent session objects do not reload verification but ended sessions c
   account('user_A');await auth.refresh();const baseline=checks;
   clerk.session={...clerk.session};notify();
   assert.equal(checks,baseline);assert.equal(await auth.getToken(),'token_user_A');
-  clerk.session.status='ended';notify();assert.equal(auth.state.status,'signed-out');
+  clerk.session.status='ended';notify();assert.equal(auth.state.status,'expired');
   await assert.rejects(()=>auth.getToken(),/Sign-in required/);auth.dispose();
 });
 

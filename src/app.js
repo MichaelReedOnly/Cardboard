@@ -1,9 +1,14 @@
 import {createSeed} from './seed.js';
 import {startBoard,loadLocalBoard} from './board-startup.js';
 import {mountAuthScreen} from './auth-view.js';
-import {createWorkspaceSession} from './workspace-session.js';
+import {createWorkspaceSession,createEmptyWorkspace} from './workspace-session.js';
 import {SaveController,saveSummary,shouldWarnBeforeLeaving} from './save-controller.js';
 import {createPendingControlLock,dirtyFormForEvent} from './save-controls.js';
+import {renderRecoveryDialog,recoveryChoicePrompt} from './recovery-view.js';
+import {bindSessionLifecycle,openDialogUnderSessionGate} from './session-lifecycle.js';
+import {readLocalWorkspaceJSON} from './storage.js';
+import {WorkspaceMigration,captureMigrationOwner} from './workspace-migration.js';
+import {renderMigrationDialog,migrationConfirmation} from './migration-view.js';
 import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,isPhotoSource,MAX_PHOTO_DATA_LENGTH,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,POST_IT_COLORS,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts,swapCardsInColumns,deleteProject,matchesProject,migrateProjects,nextProjectColor,setProjectName,validateState} from './model.js';
 
 const paths={photo:'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0 M6 21l8-8a2 2 0 0 1 3 0l4 4',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
@@ -18,12 +23,19 @@ function showError(e){
 let toastTimer;function toast(text,error=false){const e=document.querySelector('#toast');e.textContent=text;e.className='visible';e.setAttribute('role',error?'alert':'status');clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.className='',error?9000:2800);}
 let repository,state,boardId,dateFilter='',projectSelection=null,query='',sort='manual',showSearch=false,busy=false,dragId=null;
 let storageMode='local',accountInfo=null,boardAuth=null,workspaceSession=null;
+let sessionLifecycle=null;
 let saveController=null;
+let migrationSession=null,pendingImportTicket=null;
 const dirtyForms=new Set(),lockSaveControls=createPendingControlLock();
 const app=document.querySelector('#app'),editor=document.querySelector('#editor'),settings=document.querySelector('#settings');
 const saveFeedback=el('section','save-feedback');saveFeedback.hidden=true;saveFeedback.setAttribute('aria-label','Unsaved changes');
 const saveAnnouncement=el('div','visually-hidden');saveAnnouncement.setAttribute('role','status');saveAnnouncement.setAttribute('aria-live','polite');
-document.body.append(saveFeedback,saveAnnouncement);
+const recoveryDialog=el('dialog','recovery-dialog');
+const sessionGate=el('dialog','session-gate');sessionGate.setAttribute('aria-label','Checking your session');
+const migrationDialog=el('dialog','migration-dialog');
+ migrationDialog.addEventListener('cancel',event=>{event.preventDefault();closeMigration();});
+sessionGate.addEventListener('cancel',event=>event.preventDefault());
+document.body.append(saveFeedback,saveAnnouncement,recoveryDialog,sessionGate,migrationDialog);
 const quickActions = el('dialog','quick-actions');
 quickActions.id = 'quick-actions';
 quickActions.setAttribute('aria-label','Quick actions');
@@ -114,6 +126,7 @@ async function change(fn,message,afterSave){
 async function persistSnapshot(next,message,afterSave){
  const active=repository,controller=saveController;
  if(!active||!controller)return false;
+ if(!sessionUiReady()){showError({message:'Verify your session before saving changes.'});return false;}
  if(busy){showError({message:'A save is in progress. Wait for it to finish, then try that action again.'});return false;}
  try{
   const saved=await controller.save(next);
@@ -137,13 +150,144 @@ function downloadJSON(json,name){
  const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const link=el('a');link.href=url;link.download=name;link.click();
  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-function downloadRecovery(){
- const retained=saveController?.recoverySnapshot;
+function downloadRecovery(controller=saveController){
+ if(!controller||controller!==saveController||!sessionUiReady())return;
+ const retained=controller.recoverySnapshot;
  if(retained)downloadJSON(JSON.stringify(retained,null,2),`cardboard-unsaved-${dateKey()}.json`);
+}
+function openRecovery(controller=saveController){
+ if(!controller||controller!==saveController)return;
+ if(!recoveryDialog.open)showDialog(recoveryDialog);
+ syncSaveUi();
+}
+function applyRecoveredSnapshot(snapshot,closeEditors=false){
+ state=snapshot??createEmptyWorkspace();
+ if(!state.boards.some(board=>board.id===boardId))boardId=state.boards[0].id;
+ resetFilters();
+ if(closeEditors){closeMigration(true);dirtyForms.clear();for(const dialog of [editor,settings,quickActions,recoveryDialog])if(dialog.open)dialog.close();}
+ else for(const dialog of [editor,settings])for(const error of dialog.querySelectorAll('.error'))error.textContent='';
+ render();
+}
+async function performRecovery(controller,action,onResult){
+ const active=repository;
+ if(!controller||controller!==saveController||!active)return;
+ if(!sessionUiReady())return;
+ if(controller.status.pending){toast('Wait for the current workspace request to finish.',true);return;}
+ try{
+  const result=await action();
+  if(controller!==saveController||repository!==active)return;
+  onResult(result);syncSaveUi();
+ }catch{
+  if(controller!==saveController||repository!==active)return;
+  toast(controller.status.message||'Recovery could not finish. Your retained changes have not been discarded.',true);syncSaveUi();
+ }
+}
+function checkLatestRecovery(controller){
+ return performRecovery(controller,()=>controller.checkLatest(),result=>{
+  if(result.matched){applyRecoveredSnapshot(result.snapshot);toast('Your submitted changes are present in the saved workspace.');}
+ });
+}
+function chooseRecovery(controller,choice){
+ if(controller!==saveController||controller.status.pending)return;
+ const details=controller.recoveryDetails;
+ if(!details.latest||!details.candidate)return;
+ if(!window.confirm(recoveryChoicePrompt(details,choice,dirtyForms.size>0)))return;
+ return performRecovery(controller,()=>choice==='replace'
+  ? controller.replaceLatest({confirmed:true,revision:details.latest.revision})
+  : controller.useLatest({confirmed:true,revision:details.latest.revision}),snapshot=>{
+   applyRecoveredSnapshot(snapshot,true);toast(choice==='replace'?'Your changes replaced the checked saved version.':'Checked saved version loaded.');
+  });
+}
+function refreshRecoveryDialog(controller){
+ renderRecoveryDialog(recoveryDialog,{
+  status:controller.status,details:controller.recoveryDetails,
+  onCheck:()=>checkLatestRecovery(controller),onUseLatest:()=>chooseRecovery(controller,'latest'),onReplace:()=>chooseRecovery(controller,'replace'),
+  onDownload:()=>downloadRecovery(controller),onClose:()=>{if(controller===saveController)recoveryDialog.close();},
+ });
+}
+function showSessionGate(unavailable=false){
+ const auth=boardAuth;
+ document.documentElement.classList.add('session-check-pending');
+ sessionGate.replaceChildren(el('h2','','Checking your account'));
+ const message=el('p','',unavailable?'Your session could not be checked. Your edits remain in this tab while it stays open. Retry to continue.':'Verifying your account before showing your workspace…');
+ message.setAttribute('role','status');sessionGate.append(message);
+ if(unavailable)sessionGate.append(
+  button('Retry','primary',()=>{if(boardAuth===auth)return sessionLifecycle?.revalidate();}),
+  button('Sign out','secondary',()=>{if(boardAuth===auth)return signOutBoard();})
+ );
+ if(!sessionGate.open)sessionGate.showModal();
+}
+function resumeSessionUi(){
+ document.documentElement.classList.remove('session-check-pending');
+ if(sessionGate.open)sessionGate.close();sessionGate.replaceChildren();
+}
+function sessionUiReady(){return !sessionGate.open && (storageMode==='local'||(boardAuth?.state.status==='verified'&&!boardAuth.state.suspended));}
+function importOwnerContext(){return {auth:storageMode==='database'?boardAuth:null,repository,saveController};}
+function canStartImport(){
+ if(!repository||!saveController||!sessionUiReady())return false;
+ if(hasUnsavedChanges()){showError({message:'Save, close, or recover your current edits before importing.'});return false;}
+ return true;
+}
+function chooseBackupFile(){
+ if(!canStartImport())return;
+ pendingImportTicket=captureMigrationOwner(importOwnerContext());document.querySelector('#import-file').click();
+}
+function closeMigration(force=false){
+ if(!force && migrationSession?.details.phase==='saving')return false;
+ const previous=migrationSession;migrationSession=null;previous?.dispose();
+ if(migrationDialog.open)migrationDialog.close();migrationDialog.replaceChildren();return true;
+}
+function migrationStillActive(current){return current===migrationSession && storageMode==='database' && sessionUiReady();}
+function refreshMigrationDialog(){
+ const current=migrationSession;if(!current)return;
+ renderMigrationDialog(migrationDialog,{
+  details:current.details,
+  onSourceBackup:()=>{if(migrationStillActive(current))downloadJSON(current.sourceJSON(),`cardboard-source-${dateKey()}.json`);},
+  onDestinationBackup:()=>{if(migrationStillActive(current))downloadJSON(current.destinationJSON(),`cardboard-account-before-import-${dateKey()}.json`);},
+  onConfirm:()=>commitMigration(current),
+  onRetry:async()=>{if(!migrationStillActive(current))return;try{await current.retry();}catch{if(current===migrationSession)refreshMigrationDialog();}},
+  onRecover:()=>{if(migrationStillActive(current))openRecovery(saveController);},
+  onChooseBackup:()=>{if(migrationStillActive(current) && closeMigration())chooseBackupFile();},
+  onClose:()=>{if(current===migrationSession)closeMigration();},
+ });
+}
+async function beginMigration(text,label,ticket){
+ if(!ticket.matches(importOwnerContext())||storageMode!=='database'||!canStartImport()||!closeMigration())return;
+ const current=new WorkspaceMigration({auth:boardAuth,saveController,onChange:()=>{if(current===migrationSession)syncSaveUi();}});
+ migrationSession=current;showDialog(migrationDialog);
+ try{await current.prepare(text,label);}catch{if(current===migrationSession)refreshMigrationDialog();}
+}
+function importLocalWorkspace(){
+ if(storageMode!=='database'||!canStartImport())return;
+ const ticket=captureMigrationOwner(importOwnerContext());
+ let raw;try{raw=readLocalWorkspaceJSON(window.localStorage);}catch{showError({message:'This browser’s local Cardboard data could not be read. Import a JSON backup instead.'});return;}
+ if(raw===null){
+  if(!closeMigration())return;
+  migrationDialog.replaceChildren(el('h2','','Import local cards'),el('p','','No saved local workspace was found at this web address. Cards from another browser, device or address require a JSON export from there.'),button('Choose a JSON backup','primary',()=>{closeMigration();chooseBackupFile();}),button('Close','secondary',()=>closeMigration()));
+  showDialog(migrationDialog);return;
+ }
+ void beginMigration(raw,'Local cards from this browser',ticket);
+}
+async function commitMigration(current){
+ if(!migrationStillActive(current)||!canStartImport())return;
+ const details=current.details;if(details.phase!=='preview'||details.tooLarge)return;
+ if(!window.confirm(migrationConfirmation(details)))return;
+ const active=repository,controller=saveController;
+ try{
+  const saved=await current.commit({confirmed:true,revision:details.destination.revision});
+  if(current!==migrationSession||repository!==active||saveController!==controller)return;
+  state=saved;boardId=state.boards[0].id;resetFilters();closeMigration(true);
+  for(const dialog of [settings,quickActions])if(dialog.open)dialog.close();render();toast('Imported into your account. The source is unchanged.');
+ }catch{
+  if(current!==migrationSession||repository!==active||saveController!==controller)return;
+  const retained=controller.recoverySnapshot;
+  if(retained){state=retained;boardId=state.boards[0].id;resetFilters();render();}
+  refreshMigrationDialog();showError({message:controller.status.message||current.details.message});
+ }
 }
 function hasUnsavedChanges(){return shouldWarnBeforeLeaving(saveController?.status,dirtyForms.size>0);}
 function syncSaveUi(){
- const status=saveController?.status;
+ const controller=saveController,status=controller?.status;
  const phase=dirtyForms.size && status && !status.pending && !status.dirty?'editing':status?.phase;
  const footer=app.querySelector('.footer.saved');
  if(footer && state && status)footer.textContent=saveSummary(state.cards.filter(c=>c.boardId===boardId).length,storageMode,phase);
@@ -154,12 +298,24 @@ function syncSaveUi(){
  saveFeedback.replaceChildren();
  if(!saveFeedback.hidden){
   saveFeedback.append(el('p','',status.message));
-  if(status.canRetry)saveFeedback.append(button('Retry save','primary',()=>persistSnapshot(saveController.recoverySnapshot,'Changes saved')));
-  saveFeedback.append(button('Download unsaved changes','secondary',downloadRecovery));
+  if(status.canRetry)saveFeedback.append(button('Retry save','primary',()=>{if(controller===saveController)return persistSnapshot(controller.recoverySnapshot,'Changes saved');}));
+  saveFeedback.append(button('Review save recovery','secondary',()=>openRecovery(controller)),button('Download unsaved changes','secondary',()=>downloadRecovery(controller)));
  }
- lockSaveControls([app,editor,settings,quickActions,saveFeedback],!!status?.pending);
+ for(const dialog of [editor,settings]){
+  dialog.querySelector('.inline-recovery')?.remove();
+  if(dialog.open && status?.dirty && !status.pending){
+   const controls=el('section','inline-recovery');
+   controls.append(el('p','hint',status.message),button('Review save recovery','secondary',()=>openRecovery(controller)),button('Download unsaved changes','secondary',()=>downloadRecovery(controller)));
+   dialog.append(controls);
+  }
+ }
+ if(recoveryDialog.open && controller)refreshRecoveryDialog(controller);
+ if(migrationDialog.open && migrationSession)refreshMigrationDialog();
+ lockSaveControls([app,editor,settings,quickActions,saveFeedback,recoveryDialog,migrationDialog],!!status?.pending);
 }
-function showDialog(dialog){dialog.showModal();syncSaveUi();}
+function showDialog(dialog){
+ openDialogUnderSessionGate(dialog,sessionGate,syncSaveUi);
+}
 function clearDirtyForms(dialog){for(const form of dirtyForms)if(dialog.contains(form))dirtyForms.delete(form);}
 function markFormSaved(form){dirtyForms.delete(form);syncSaveUi();}
 function requestDialogClose(dialog){
@@ -727,6 +883,7 @@ function openAccount(){
  if(!accountInfo||!boardAuth)return;
  dialogHead(settings,'Your account');settings.append(el('p','auth-account',accountInfo.label));
  settings.append(el('p','hint','Your boards and projects are private to this account.'));
+ settings.append(button('Import local cards into my account','secondary',()=>{settings.close();importLocalWorkspace();}));
  const signOut=button('Sign out','secondary',signOutBoard);signOut.dataset.saveAllowed='true';settings.append(signOut);showDialog(settings);syncSaveUi();
 }
 async function signOutBoard(){
@@ -747,13 +904,18 @@ function openSettings(mode='options'){
   menu('Rename board',()=>{settings.close();nameDialog('Rename board',name=>change(s=>s.boards.find(b=>b.id===boardId).name=name,'Board renamed'),state.boards.find(b=>b.id===boardId).name);});
   menu('New card',()=>{settings.close();openEditor();});
  }
- settings.append(el('p','menu-label','YOUR DATA'));menu('Export all boards',async()=>{const active=repository;try{const json=await active.exportJSON();if(repository!==active)return;const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const a=el('a');a.href=url;a.download=`cardboard-${dateKey()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Backup exported');}catch(e){if(repository===active)showError(e);}});menu('Import a backup',()=>{settings.close();document.querySelector('#import-file').click();});settings.append(el('p','hint',`Import replaces all boards ${storageMode==='database'?'in this account':'in this browser'}. You can export your current boards first.`));showDialog(settings);
+ settings.append(el('p','menu-label','YOUR DATA'));menu('Export all boards',async()=>{const active=repository;try{const json=await active.exportJSON();if(repository!==active)return;if(!sessionUiReady()){toast('Verify your session, then export again.',true);return;}const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const a=el('a');a.href=url;a.download=`cardboard-${dateKey()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Backup exported');}catch(e){if(repository===active)showError(e);}});menu('Import a backup',()=>{settings.close();chooseBackupFile();});if(storageMode==='database')menu('Import local cards into my account',()=>{settings.close();importLocalWorkspace();});settings.append(el('p','hint',`Import replaces all boards ${storageMode==='database'?'in this account':'in this browser'}. You can export your current boards first.`));showDialog(settings);
 }
 document.querySelector('#import-file').onchange=async e=>{
- const active=repository,file=e.target.files[0];e.target.value='';if(!file||!active)return;
+ const ticket=pendingImportTicket;pendingImportTicket=null;const file=e.target.files[0];e.target.value='';
+ if(!file||!ticket||!ticket.matches(importOwnerContext()))return;
+ const active=ticket.repository;
+ if(storageMode==='database')await sessionLifecycle?.revalidate();
+ if(!ticket.matches(importOwnerContext())||!sessionUiReady())return;
  if(file.size>5_000_000){toast('Choose a backup smaller than 5 MB.',true);return;}
  try{
-  const text=await file.text();if(repository!==active)return;
+  const text=await file.text();if(!ticket.matches(importOwnerContext()))return;
+  if(storageMode==='database'){await beginMigration(text,`JSON backup: ${file.name}`,ticket);return;}
   const parsed=validateState(migrateProjects(JSON.parse(text)));
   dialogHead(settings,'Replace your boards?');
   const destination=storageMode==='database'?`in account ${accountInfo.label}`:'in this browser';
@@ -768,13 +930,15 @@ document.querySelector('#import-file').onchange=async e=>{
 let resizeTimer;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(state)render();},150);});
 document.addEventListener('keydown',e=>{if(!state)return;if(e.key==='Escape'&&showSearch&&!editor.open&&!settings.open){showSearch=false;query='';render();}if((e.ctrlKey||e.metaKey)&&e.key==='k'&&!editor.open&&!settings.open){e.preventDefault();showSearch=true;render();document.querySelector('#search')?.focus();}});
 function clearPrivateState(){
+ closeMigration(true);pendingImportTicket=null;
  saveController?.dispose();saveController=null;dirtyForms.clear();
  endDrag();sort='manual';
  repository=undefined;state=undefined;boardId=undefined;accountInfo=null;busy=false;dragId=null;
  resetFilters();showSearch=false;clearTimeout(toastTimer);
  document.querySelector('#toast').textContent='';document.querySelector('#toast').className='';
- for(const dialog of [editor,settings,quickActions]){if(dialog.open)dialog.close();}
+ for(const dialog of [editor,settings,quickActions,recoveryDialog]){if(dialog.open)dialog.close();}
  editor.replaceChildren();settings.replaceChildren();document.querySelector('#import-file').value='';
+ recoveryDialog.replaceChildren();
  syncSaveUi();
 }
 let unmountAuth,startupAttempt=0;
@@ -783,7 +947,10 @@ async function startLocalBoard(attempt){
  if(attempt!==startupAttempt)return;
  repository=current;state=loaded;boardId=state.boards[0].id;initializeSaveController();render();
 }
-function stopDatabaseSession(){workspaceSession?.dispose();workspaceSession=null;boardAuth=null;}
+function stopDatabaseSession(){
+ sessionLifecycle?.dispose();sessionLifecycle=null;resumeSessionUi();
+ workspaceSession?.dispose();workspaceSession=null;boardAuth=null;
+}
 function showWorkspaceStatus(event){
  clearPrivateState();
  if(event.status==='ready'){
@@ -804,7 +971,11 @@ async function start(){
    if(attempt!==startupAttempt)return;storageMode='database';
    unmountAuth=mountAuthScreen(app,{
     onSessionChange:account=>{if(account.status!=='verified'){stopDatabaseSession();clearPrivateState();}},
-    onVerified:auth=>{boardAuth=auth;workspaceSession??=createWorkspaceSession({auth,onChange:showWorkspaceStatus});},
+    onVerified:(auth,account)=>{
+     boardAuth=auth;
+     sessionLifecycle??=bindSessionLifecycle({auth,onSuspend:()=>showSessionGate(),onResume:resumeSessionUi,onUnavailable:()=>showSessionGate(true)});
+     if(!account.suspended)workspaceSession??=createWorkspaceSession({auth,onChange:showWorkspaceStatus});
+    },
    });
   }});
  }catch{

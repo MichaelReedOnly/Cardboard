@@ -70,3 +70,23 @@ test('verified board handoff is not overwritten by the preview screen',async t=>
   listener({status:'signed-out'});assert.doesNotMatch(root.textContent,/Loaded private board/);
   assert.match(root.textContent,/invited email/);
 });
+
+test('expired sessions offer sign-in and explain private-draft clearing without showing the old account',async t=>{
+  let listener;
+  const auth={subscribe(fn){listener=fn;fn({status:'signed-out'});return ()=>{};},refresh:async()=>{}};
+  const root=screenFixture(t,async()=>auth);await flush();
+  listener({status:'verified',signedIn:true,label:'Account A'});
+  listener({status:'expired',signedIn:true,message:'Your session ended.'});
+  assert.doesNotMatch(root.textContent,/Account A/);assert.match(root.textContent,/unsaved changes in this page have been cleared/);
+  assert.deepEqual(buttons(root).map(node=>node.textContent),['Sign in','Sign out']);
+});
+
+test('preview suspension offers a fresh check and hides the account label until verified again',async t=>{
+  let listener,rechecks=0;
+  const auth={subscribe(fn){listener=fn;fn({status:'signed-out'});return ()=>{};},refresh:async()=>{},revalidate:async()=>rechecks++};
+  const root=screenFixture(t,async()=>auth,{preview:true});await flush();
+  listener({status:'verified',signedIn:true,suspended:true,label:'Account A',message:'Your session could not be checked.'});
+  assert.doesNotMatch(root.textContent,/Account A|Cardboard verified your Clerk session/);
+  assert.deepEqual(buttons(root).map(node=>node.textContent),['Retry','Sign out']);
+  await buttons(root)[0].onclick();assert.equal(rechecks,1);
+});

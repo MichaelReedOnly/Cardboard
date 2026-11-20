@@ -206,3 +206,14 @@ test('fetch is invoked as a standalone function, not as a repository method',asy
   const repo=new ApiBoardRepository({...f,fetchImpl});
   assert.deepEqual(await repo.load(),state());repo.dispose();
 });
+
+test('clearing recovery requires a valid reload, changes memory only, and remains account-bound',async()=>{
+  const f=fixture();let conflict=false;
+  const repo=new ApiBoardRepository({...f,fetchImpl:(...args)=>conflict?response({},409):f.fetchImpl(...args)});
+  await repo.load();conflict=true;await assert.rejects(()=>repo.save(state('Draft')));
+  await assert.rejects(()=>repo.clearRecovery(),kind('reload-required'));
+  assert.equal(repo.recoverySnapshot.boards[0].name,'Draft');conflict=false;
+  await repo.load();const requests=f.calls.length;await repo.clearRecovery();
+  assert.equal(repo.recoverySnapshot,null);assert.equal(f.calls.length,requests);
+  f.changeAuth({status:'signed-out'});await assert.rejects(()=>repo.clearRecovery(),kind('session'));repo.dispose();
+});
