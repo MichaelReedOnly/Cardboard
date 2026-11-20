@@ -195,3 +195,14 @@ test('token retrieval that finishes after timeout never starts a late request',a
   pending.resolve('late-token');await new Promise(resolve=>setImmediate(resolve));
   assert.equal(f.calls.length,0);repo.dispose();
 });
+
+test('fetch is invoked as a standalone function, not as a repository method',async()=>{
+  const f=fixture();
+  const fetchImpl=function(...args){
+    // Browser host functions can reject an incompatible object receiver.
+    if(this!==undefined)throw new TypeError('Illegal invocation');
+    return f.fetchImpl(...args);
+  };
+  const repo=new ApiBoardRepository({...f,fetchImpl});
+  assert.deepEqual(await repo.load(),state());repo.dispose();
+});

@@ -7,7 +7,7 @@
     "start": "node server.js",
     "db:migrate": "node --env-file=.env backend/migrate.js",
     "test": "node --test tests/*.test.js",
-    "check": "node --check src/app.js && node --check src/storage.js && node --check src/api-storage.js && node --check src/model.js && node --check server.js && node --check backend/config.js && node --check src/auth.js && node --check src/auth-view.js && node --check src/board-startup.js && node --check src/sign-in-preview.js && node --check app.cjs"
+    "check": "node --check src/app.js && node --check src/storage.js && node --check src/api-storage.js && node --check src/model.js && node --check server.js && node --check backend/config.js && node --check src/auth.js && node --check src/auth-view.js && node --check src/board-startup.js && node --check src/workspace-session.js && node --check src/save-controller.js && node --check src/save-controls.js && node --check src/sign-in-preview.js && node --check app.cjs"
   },
   "keywords": [],
   "author": "",

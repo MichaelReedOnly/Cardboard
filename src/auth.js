@@ -1,18 +1,30 @@
 // Shared authentication. Tokens are never persisted.
 export function createAuthController({clerk,fetchImpl=globalThis.fetch}) {
   let state={status:'loading',signedIn:false};
-  let generation=0,disposed=false,signingOut=false,verifiedSession=null,request;
+  let generation=0,disposed=false,signingOut=false,verifiedSession=null,pendingSession=null,request;
   const listeners=new Set();
   function publish(next) {
     state=Object.freeze(next);
     for (const listener of listeners) listener(state);
   }
-  function invalidate() {generation++;verifiedSession=null;request?.abort();}
+  function currentSession() {
+    const session=clerk.session;
+    if (!clerk.isSignedIn || !session || (session.status && session.status!=='active')) return null;
+    if (session.expireAt && new Date(session.expireAt).getTime()<=Date.now()) return null;
+    return session;
+  }
+  function identity(session) {
+    return session?.id && (session.user?.id || clerk.user?.id)
+      ? JSON.stringify([session.id,session.user?.id || clerk.user?.id]) : session;
+  }
+  function sameSession(first,second) {return !!first && !!second && identity(first)===identity(second);}
+  function invalidate() {generation++;verifiedSession=null;pendingSession=null;request?.abort();}
   async function refresh() {
     if (disposed || signingOut) return;
     invalidate();
-    const attempt=generation,session=clerk.session;
-    if (!clerk.isSignedIn || !session) {publish({status:'signed-out',signedIn:false});return;}
+    const attempt=generation,session=currentSession();
+    if (!session) {publish({status:'signed-out',signedIn:false});return;}
+    pendingSession=session;
     publish({status:'verifying',signedIn:true});
     request=new AbortController();
     const signal=request.signal;
@@ -24,12 +36,12 @@ export function createAuthController({clerk,fetchImpl=globalThis.fetch}) {
         headers:{Authorization:`Bearer ${token}`},cache:'no-store',signal,
       });
       const result=await response.json();
-      if (attempt!==generation || disposed || clerk.session!==session) return;
+      if (attempt!==generation || disposed || !sameSession(currentSession(),session)) return;
       const expectedUser=session.user?.id || clerk.user?.id;
       if (!response.ok || typeof result.userId!=='string' || !result.userId ||
           (expectedUser && result.userId!==expectedUser)) throw Error('Verification failed');
-      verifiedSession=session;
-      publish({status:'verified',signedIn:true,userId:result.userId,
+      verifiedSession=currentSession();pendingSession=null;
+      publish({status:'verified',signedIn:true,userId:result.userId,sessionId:session.id,
         label:session.user?.primaryEmailAddress?.emailAddress || clerk.user?.primaryEmailAddress?.emailAddress || result.userId});
     } catch {
       if (attempt===generation && !disposed) {
@@ -37,16 +49,21 @@ export function createAuthController({clerk,fetchImpl=globalThis.fetch}) {
       }
     }
   }
-  const unsubscribe=clerk.addListener(()=>{void refresh();});
+  const unsubscribe=clerk.addListener(()=>{
+    const session=currentSession();
+    if (state.status==='verified' && sameSession(session,verifiedSession)) {verifiedSession=session;return;}
+    if (state.status==='verifying' && sameSession(session,pendingSession)) return;
+    void refresh();
+  });
   return {
     get state(){return state;},
     subscribe(listener){listeners.add(listener);listener(state);return ()=>listeners.delete(listener);},
     refresh,
     async getToken() {
       const attempt=generation,session=verifiedSession;
-      if (disposed || state.status!=='verified' || !session || clerk.session!==session) throw Error('Sign-in required');
+      if (disposed || state.status!=='verified' || !sameSession(currentSession(),session)) throw Error('Sign-in required');
       const token=await session.getToken();
-      if (disposed || attempt!==generation || clerk.session!==session) throw Error('Session changed. Try again.');
+      if (disposed || attempt!==generation || !sameSession(currentSession(),session)) throw Error('Session changed. Try again.');
       if (!token) {void refresh();throw Error('Sign-in required');}
       return token;
     },

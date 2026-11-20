@@ -35,7 +35,7 @@ export function readServerConfig(env) {
   };
 }
 
-/** Safe public rollout status; database board integration follows in Step 3.3. */
+/** Safe public status: both entry points can now open their configured board. */
 export function getPublicConfig(config) {
-  return {storageMode:config.storageMode,boardReady:config.storageMode === 'local'};
+  return {storageMode:config.storageMode,boardReady:true};
 }

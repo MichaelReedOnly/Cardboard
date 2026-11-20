@@ -13,12 +13,12 @@ class Node {
   querySelector(){return this.children.find(child=>child.attributes.role==='status');}
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-function screenFixture(t,initialize) {
+function screenFixture(t,initialize,options={}) {
   const oldDocument=globalThis.document;
   globalThis.document={createElement:tag=>new Node(tag)};
   t.after(()=>{if (oldDocument===undefined) delete globalThis.document;else globalThis.document=oldDocument;});
   const root=new Node('div');
-  const unmount=mountAuthScreen(root,{initialize,location:{origin:'https://board.example.com',pathname:'/cards'}});
+  const unmount=mountAuthScreen(root,{initialize,location:{origin:'https://board.example.com',pathname:'/cards'},...options});
   t.after(unmount);
   return root;
 }
@@ -59,4 +59,14 @@ test('initialization errors offer Retry and recover without exposing account con
   assert.match(root.textContent,/invited email/);
   await buttons(root)[0].onclick();
   assert.equal(redirect,'https://board.example.com/cards');
+});
+
+test('verified board handoff is not overwritten by the preview screen',async t=>{
+  let listener,handedAuth;
+  const auth={subscribe(fn){listener=fn;fn({status:'signed-out'});return ()=>{};},refresh:async()=>{}};
+  const root=screenFixture(t,async()=>auth,{onVerified:controller=>{handedAuth=controller;root.replaceChildren(new Node('section'));root.children[0].textContent='Loaded private board';}});
+  await flush();listener({status:'verified',signedIn:true,label:'Account A'});
+  assert.equal(handedAuth,auth);assert.equal(root.textContent,'Loaded private board');
+  listener({status:'signed-out'});assert.doesNotMatch(root.textContent,/Loaded private board/);
+  assert.match(root.textContent,/invited email/);
 });

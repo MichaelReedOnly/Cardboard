@@ -36,8 +36,8 @@ async function verifySession(req,res) {
 }
 const appPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https: http:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 const previewPolicy = clerkOrigin
-  ? appPolicy.replace("script-src 'self'",`script-src 'self' ${clerkOrigin}`)
-    .replace("connect-src 'self'",`connect-src 'self' ${clerkOrigin}; frame-src ${clerkOrigin}`)
+  ? appPolicy.replace("script-src 'self'",`script-src 'self' ${clerkOrigin} https://challenges.cloudflare.com https://*.protect.clerk.com`)
+    .replace("connect-src 'self'",`connect-src 'self' ${clerkOrigin} https://*.protect.clerk.com:* https://challenges.cloudflare.com; frame-src 'self' ${clerkOrigin} https://challenges.cloudflare.com https://*.protect.clerk.com; worker-src 'self' blob:`)
   : appPolicy;
 http.createServer(async(req,res)=>{
  try{

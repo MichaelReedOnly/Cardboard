@@ -46,9 +46,9 @@ test('production requires an explicit HTTPS origin; origins cannot contain paths
   }
 });
 
-test('storage selection is explicit and database mode is not advertised as a ready board',()=>{
+test('storage selection is explicit and configured database mode has a board entry flow',()=>{
   const config=readServerConfig({...keys('live'),CARDBOARD_STORAGE:'database'});
-  assert.deepEqual(getPublicConfig(config),{storageMode:'database',boardReady:false});
+  assert.deepEqual(getPublicConfig(config),{storageMode:'database',boardReady:true});
   assert.throws(()=>readServerConfig({CARDBOARD_STORAGE:'databse'}),/CARDBOARD_STORAGE/);
   assert.throws(()=>readServerConfig({CARDBOARD_STORAGE:''}),/CARDBOARD_STORAGE/);
   assert.throws(()=>readServerConfig({CARDBOARD_STORAGE:'database'}),/Database mode requires/);

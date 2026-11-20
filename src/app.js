@@ -1,13 +1,15 @@
-import {LocalBoardRepository} from './storage.js';
 import {createSeed} from './seed.js';
-import {startBoard} from './board-startup.js';
+import {startBoard,loadLocalBoard} from './board-startup.js';
 import {mountAuthScreen} from './auth-view.js';
+import {createWorkspaceSession} from './workspace-session.js';
+import {SaveController,saveSummary,shouldWarnBeforeLeaving} from './save-controller.js';
+import {createPendingControlLock,dirtyFormForEvent} from './save-controls.js';
 import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,isPhotoSource,MAX_PHOTO_DATA_LENGTH,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,POST_IT_COLORS,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts,swapCardsInColumns,deleteProject,matchesProject,migrateProjects,nextProjectColor,setProjectName,validateState} from './model.js';
 
 const paths={photo:'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0 M6 21l8-8a2 2 0 0 1 3 0l4 4',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
 function icon(name){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',paths[name]||paths.note);svg.append(p);return svg;}
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
-function button(label,cls,action,iconName){const b=el('button',cls,iconName?undefined:label);b.type='button';b.setAttribute('aria-label',label);if(iconName)b.append(icon(iconName));b.onclick=action;return b;}
+function button(label,cls,action,iconName){const b=el('button',cls,iconName?undefined:label);b.type='button';b.setAttribute('aria-label',label);if(label==='Cancel'||cls?.split(' ').includes('close')||cls==='quick-close')b.dataset.saveAllowed='true';if(iconName)b.append(icon(iconName));b.onclick=action;return b;}
 function showError(e){
  const dialogError = settings.open && settings.querySelector('.project-save-error');
  if (dialogError) dialogError.textContent = e.message || String(e);
@@ -15,7 +17,13 @@ function showError(e){
 }
 let toastTimer;function toast(text,error=false){const e=document.querySelector('#toast');e.textContent=text;e.className='visible';e.setAttribute('role',error?'alert':'status');clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.className='',error?9000:2800);}
 let repository,state,boardId,dateFilter='',projectSelection=null,query='',sort='manual',showSearch=false,busy=false,dragId=null;
+let storageMode='local',accountInfo=null,boardAuth=null,workspaceSession=null;
+let saveController=null;
+const dirtyForms=new Set(),lockSaveControls=createPendingControlLock();
 const app=document.querySelector('#app'),editor=document.querySelector('#editor'),settings=document.querySelector('#settings');
+const saveFeedback=el('section','save-feedback');saveFeedback.hidden=true;saveFeedback.setAttribute('aria-label','Unsaved changes');
+const saveAnnouncement=el('div','visually-hidden');saveAnnouncement.setAttribute('role','status');saveAnnouncement.setAttribute('aria-live','polite');
+document.body.append(saveFeedback,saveAnnouncement);
 const quickActions = el('dialog','quick-actions');
 quickActions.id = 'quick-actions';
 quickActions.setAttribute('aria-label','Quick actions');
@@ -55,6 +63,7 @@ textControls.append(textLabel,textValue,textSlider,resetText);
 quickActions.append(newCardAction,columnRow,textControls,button('Close quick actions','quick-close',()=>quickActions.close(),'close'));
 
 function previewTextSize(grid,size) {
+  if(!grid)return;
   grid.style.setProperty('--card-text',`${size / 16}rem`);
   textValue.textContent = `${size}`;
   textSlider.setAttribute('aria-valuetext',`Size ${size}`);
@@ -62,6 +71,8 @@ function previewTextSize(grid,size) {
 
 async function saveTextSize(size) {
   const grid = app.querySelector('.board');
+  if(!grid||!state)return;
+  const active=repository;
   const count = Number(grid.dataset.columns);
   const activeBoardId = boardId;
   const saved = await change(next=>{
@@ -72,7 +83,7 @@ async function saveTextSize(size) {
       (board.cardTextSizes ??= {})[count] = size;
     }
   });
-  if (!saved) render();
+  if (!saved && repository===active && state) render();
 }
 
 textSlider.oninput = () => previewTextSize(app.querySelector('.board'),textSlider.valueAsNumber);
@@ -94,7 +105,76 @@ function updateColumnControls(count) {
   more.disabled = count>=MAX_COLUMNS;
   auto.setAttribute('aria-pressed',String(state.boards.find(board=>board.id===boardId).columnPreference==null));
 }
-async function change(fn,message,afterSave){if(busy)return false;busy=true;try{const next=clone(state);if(fn(next)===false)return true;reconcileLayouts(next);const saved=await repository.save(next);state=saved;afterSave?.();render();if(message)toast(message);return true;}catch(e){showError(e);return false;}finally{busy=false;}}
+async function change(fn,message,afterSave){
+ if(!state||!repository||!saveController)return false;
+ if(busy){showError({message:'A save is in progress. Wait for it to finish, then try that action again.'});return false;}
+ try{const next=clone(state);if(fn(next)===false)return true;reconcileLayouts(next);return await persistSnapshot(next,message,afterSave);}
+ catch(e){showError(e);return false;}
+}
+async function persistSnapshot(next,message,afterSave){
+ const active=repository,controller=saveController;
+ if(!active||!controller)return false;
+ if(busy){showError({message:'A save is in progress. Wait for it to finish, then try that action again.'});return false;}
+ try{
+  const saved=await controller.save(next);
+  if(repository!==active||saveController!==controller)return false;
+  state=saved;afterSave?.();render();if(message)toast(message);return true;
+ }catch{
+  if(repository!==active||saveController!==controller)return false;
+  const retained=controller.recoverySnapshot;
+  if(retained){state=retained;if(!state.boards.some(b=>b.id===boardId)){boardId=state.boards[0].id;resetFilters();}render();}
+  showError({message:controller.status.message||'These changes could not be saved. Your editor values are still here.'});
+  return false;
+ }
+}
+function initializeSaveController(){
+ const active=repository;
+ saveController=new SaveController({repository:active,initialState:state,mode:storageMode,onChange:status=>{
+  if(repository!==active)return;busy=status.pending;syncSaveUi();
+ }});
+}
+function downloadJSON(json,name){
+ const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const link=el('a');link.href=url;link.download=name;link.click();
+ setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function downloadRecovery(){
+ const retained=saveController?.recoverySnapshot;
+ if(retained)downloadJSON(JSON.stringify(retained,null,2),`cardboard-unsaved-${dateKey()}.json`);
+}
+function hasUnsavedChanges(){return shouldWarnBeforeLeaving(saveController?.status,dirtyForms.size>0);}
+function syncSaveUi(){
+ const status=saveController?.status;
+ const phase=dirtyForms.size && status && !status.pending && !status.dirty?'editing':status?.phase;
+ const footer=app.querySelector('.footer.saved');
+ if(footer && state && status)footer.textContent=saveSummary(state.cards.filter(c=>c.boardId===boardId).length,storageMode,phase);
+ const announcement=status?saveSummary(0,storageMode,phase).split(' · ')[1]:'';
+ if(saveAnnouncement.textContent!==announcement)saveAnnouncement.textContent=announcement;
+ app.setAttribute('aria-busy',String(status?.pending||false));
+ saveFeedback.hidden=!status?.dirty||status.pending;
+ saveFeedback.replaceChildren();
+ if(!saveFeedback.hidden){
+  saveFeedback.append(el('p','',status.message));
+  if(status.canRetry)saveFeedback.append(button('Retry save','primary',()=>persistSnapshot(saveController.recoverySnapshot,'Changes saved')));
+  saveFeedback.append(button('Download unsaved changes','secondary',downloadRecovery));
+ }
+ lockSaveControls([app,editor,settings,quickActions,saveFeedback],!!status?.pending);
+}
+function showDialog(dialog){dialog.showModal();syncSaveUi();}
+function clearDirtyForms(dialog){for(const form of dirtyForms)if(dialog.contains(form))dirtyForms.delete(form);}
+function markFormSaved(form){dirtyForms.delete(form);syncSaveUi();}
+function requestDialogClose(dialog){
+ if([...dirtyForms].some(form=>dialog.contains(form)) && !window.confirm('Close without saving these editor changes?'))return;
+ dialog.close();
+}
+for(const dialog of [editor,settings]){
+ dialog.addEventListener('close',()=>{clearDirtyForms(dialog);syncSaveUi();});
+ dialog.addEventListener('cancel',event=>{if([...dirtyForms].some(form=>dialog.contains(form)) && !window.confirm('Close without saving these editor changes?'))event.preventDefault();});
+}
+for(const eventName of ['input','change','click'])document.addEventListener(eventName,event=>{
+ const form=dirtyFormForEvent(event,[editor,settings]);
+ if(form){dirtyForms.add(form);syncSaveUi();}
+},true);
+window.addEventListener('beforeunload',event=>{if(hasUnsavedChanges()){event.preventDefault();event.returnValue='';}});
 function columnCount(visibleCount = visibleCards().length) {
   const board = state.boards.find(board=>board.id===boardId);
   return displayColumnCount(board.columnPreference,visibleCount,window.innerWidth);
@@ -145,7 +225,7 @@ function chooseColumn(card, count) {
       }
     }));
   }
-  settings.showModal();
+  showDialog(settings);
 }
 const dateKey=(offset=0)=>{const d=new Date();d.setDate(d.getDate()+offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
 function boardCards() {
@@ -197,7 +277,7 @@ function projectOptions(project) {
     },'Project renamed'),project.name)),
     button('Delete project','menu-row danger',()=>confirmProjectDelete(project))
   );
-  settings.showModal();
+  showDialog(settings);
 }
 
 function confirmProjectDelete(project) {
@@ -249,12 +329,15 @@ function renderFilters() {
   return filters;
 }
 function render(){
+ if(!state)return;
  endDrag();
  const focusedFilter = document.activeElement?.dataset.filterKey;
  const focusSearch=document.activeElement?.id==='search';const cursor=focusSearch?document.activeElement.selectionStart:null;
  app.replaceChildren();const header=el('header');const brand=el('div','brand');brand.setAttribute('aria-hidden','true');for(let i=0;i<4;i++)brand.append(el('i'));header.append(brand);
  const title=button(state.boards.find(b=>b.id===boardId)?.name||'All','board-select',()=>openSettings('boards'));title.append(icon('down'));header.append(title);
- const actions=el('div','header-actions');actions.append(button('Search cards','icon-button',()=>{showSearch=!showSearch;if(!showSearch)query='';render();document.querySelector('#search')?.focus();},'search'),button('Board options','icon-button',()=>openSettings(),'more'),button('About this local board','icon-button profile',()=>openSettings('about'),'user'));header.append(actions);app.append(header);
+ const profile=button(storageMode==='database'?`Account: ${accountInfo.label}`:'About this local board',`icon-button profile${storageMode==='database'?' account-profile':''}`,()=>storageMode==='database'?openAccount():openSettings('about'),'user');
+ if(storageMode==='database')profile.dataset.saveAllowed='true';
+ const actions=el('div','header-actions');actions.append(button('Search cards','icon-button',()=>{showSearch=!showSearch;if(!showSearch)query='';render();document.querySelector('#search')?.focus();},'search'),button('Board options','icon-button',()=>openSettings(),'more'),profile);header.append(actions);app.append(header);
  app.append(renderFilters());
  const allCards=boardCards();const cards=visibleCards(allCards);if(showSearch){const search=el('div','search-wrap');const input=el('input');input.id='search';input.type='search';input.placeholder='Search your cards';input.setAttribute('aria-label','Search cards');input.value=query;input.oninput=()=>{query=input.value;render();};search.append(icon('search'),input,el('span','search-count',`${cards.length} cards`));app.append(search);}
  const grid=el('main','board');grid.setAttribute('aria-label','Cards board');
@@ -275,10 +358,10 @@ function render(){
    return column;
  });
  if(cards.length)grid.append(...columns);else{const empty=el('div','empty');empty.append(el('h2','',query||dateFilter||projectSelection!==null?'No matching cards':'A little space for your thoughts'),el('p','',query||dateFilter||projectSelection!==null?'Try another search or clear your filters.':'Start with a note, a list, or a plan for the week.'),button(query||dateFilter||projectSelection!==null?'Clear filters':'Create a card','primary',()=>{if(query||dateFilter||projectSelection!==null){resetFilters();render();}else openEditor();}));grid.append(empty);}
- const fab = button('Quick actions','fab',()=>quickActions.showModal(),'plus');
+ const fab = button('Quick actions','fab',()=>showDialog(quickActions),'plus');
  fab.setAttribute('aria-haspopup','dialog');
  fab.setAttribute('aria-controls',quickActions.id);
- app.append(grid,fab,el('div','footer saved',`${state.cards.filter(c=>c.boardId===boardId).length} cards · Saved on this device`));
+ app.append(grid,fab,el('div','footer saved',''));
  const columnWidth = columns[0].getBoundingClientRect().width;
  const board = state.boards.find(board=>board.id===boardId);
  const textSize = cardTextSize(board,count,columnWidth);
@@ -291,6 +374,7 @@ function render(){
  }
  if (focusedFilter) Array.from(app.querySelectorAll('[data-filter-key]')).find(control=>control.dataset.filterKey===focusedFilter)?.focus();
  if(focusSearch){const input=document.querySelector('#search');input?.focus();try{input?.setSelectionRange(cursor,cursor);}catch{}}
+ syncSaveUi();
 }
 function todoCheckbox(done, onToggle) {
   const check = button('To-do completed','check todo-check',onToggle);
@@ -385,7 +469,7 @@ function moveEarlier(card) {
   const destination = columns.findIndex(column=>column.includes(before));
   change(next=>moveInColumns(next,boardId,count,card.id,destination,before),'Card moved');
 }
-function dialogHead(dialog,title){dialog.replaceChildren();dialog.setAttribute('aria-label',title);const head=el('div','dialog-head');head.append(el('h2','',title),button('Close','icon-button close',()=>dialog.close(),'close'));dialog.append(head);}
+function dialogHead(dialog,title){clearDirtyForms(dialog);dialog.replaceChildren();dialog.setAttribute('aria-label',title);const head=el('div','dialog-head');head.append(el('h2','',title),button('Close','icon-button close',()=>requestDialogClose(dialog),'close'));dialog.append(head);}
 function field(form,label,name,value,tag='input',options){const wrap=el('label','field',label);const input=el(tag);input.name=name;if(tag==='select')for(const [v,t]of options){const o=el('option','',t);o.value=v;input.append(o);}input.value=value??'';wrap.append(input);form.append(wrap);return input;}
 function stylePostIt(surface, color = 'amber', alignment = 'left') {
   surface.style.setProperty('--post-it-color',POST_IT_COLORS[color]);
@@ -529,9 +613,10 @@ function photoEditor(card) {
       file.disabled = false;
       url.disabled = false;
       remove.disabled = false;
+      syncSaveUi();
     }
   };
-  const remove = button('Remove photo','add-item',()=>{
+  const remove = button('Remove photo','add-item photo-remove',()=>{
     localSource = '';
     url.value = '';
     refresh();
@@ -567,6 +652,7 @@ function openEditor(id){
      project.append(option);
    }
    project.value = id;
+   project.dispatchEvent(new Event('change',{bubbles:true}));
  }));
  projectField.append(createProject);
  row.append(projectField);
@@ -618,7 +704,7 @@ function openEditor(id){
  updateType();
  const pinLabel=el('label','form-check');const pin=el('input');pin.type='checkbox';pin.checked=c.pinned;pinLabel.append(pin,document.createTextNode('Pin to the top'));form.append(pinLabel);
  const error=el('p','error');error.setAttribute('role','alert');form.append(error);const actions=el('div','dialog-actions');
- if(existing)actions.append(button('Delete card','danger',()=>confirmDelete(c)));actions.append(button('Cancel','secondary',()=>editor.close()));const save=el('button','primary','Save card');save.type='submit';actions.append(save);form.append(actions);
+ if(existing)actions.append(button('Delete card','danger',()=>confirmDelete(c)));actions.append(button('Cancel','secondary',()=>requestDialogClose(editor)));const save=el('button','primary','Save card');save.type='submit';actions.append(save);form.append(actions);
  form.onsubmit=async e=>{
   e.preventDefault();
   const type = form.elements.type.value;
@@ -632,11 +718,23 @@ function openEditor(id){
   }
   const cardTitle = type === 'single-todo' ? task.replace(/\s+/g,' ').slice(0,200) : title.value.trim();
   const updated={...c,...photoValues,...(type==='single-todo'?{todoDone}:{}),...(type==='post-it'?postIt.values():{}),title:cardTitle,type,projectId:type==='single-todo'?null:project.value||null,date:date.value,body:body.value,pinned:pin.checked,url:type==='link'?url.value:'',items:['week','checklist'].includes(type)?parseItems(list.value,type,c.items):[]};
-  save.disabled=true;const ok=await change(s=>{const i=s.cards.findIndex(x=>x.id===c.id);if(i<0)s.cards.push(updated);else s.cards[i]=updated;},'Card saved');save.disabled=false;if(ok)editor.close();else error.textContent='Could not save. Your changes are still here; try again.';
- };editor.append(form);editor.showModal();(c.type==='single-todo'?body:title).focus();
+  const active=repository,controller=saveController;save.disabled=true;const ok=await change(s=>{const i=s.cards.findIndex(x=>x.id===c.id);if(i<0)s.cards.push(updated);else s.cards[i]=updated;},'Card saved');save.disabled=false;if(repository!==active||saveController!==controller)return;
+  if(ok){markFormSaved(form);editor.close();}else error.textContent=saveController?.status.message||'Could not save. Your changes are still here; try again.';
+ };editor.append(form);showDialog(editor);(c.type==='single-todo'?body:title).focus();
 }
-function confirmDelete(c){dialogHead(settings,'Delete this card?');settings.append(el('p','hint',`“${c.title}” will be removed from this device.`));const actions=el('div','dialog-actions');actions.append(button('Keep card','secondary',()=>settings.close()),button('Delete card','primary',async()=>{if(await change(s=>s.cards=s.cards.filter(x=>x.id!==c.id),'Card deleted')){settings.close();editor.close();}}));settings.append(actions);settings.showModal();}
-function nameDialog(title,onSave,value=''){dialogHead(settings,title);const form=el('form');const input=field(form,'Name','name',value);input.required=true;input.maxLength=100;const error=el('p','error project-save-error');error.setAttribute('role','alert');form.append(error);const actions=el('div','dialog-actions');const save=el('button','primary','Save');save.type='submit';actions.append(save);form.append(actions);form.onsubmit=async e=>{e.preventDefault();if(!input.value.trim())return;save.disabled=true;if(await onSave(input.value.trim()))settings.close();save.disabled=false;};settings.append(form);settings.showModal();input.focus();}
+function confirmDelete(c){dialogHead(settings,'Delete this card?');settings.append(el('p','hint',`“${c.title}” will be removed from ${storageMode==='database'?'your account':'this device'}.`));const actions=el('div','dialog-actions');actions.append(button('Keep card','secondary',()=>settings.close()),button('Delete card','primary',async()=>{if(await change(s=>s.cards=s.cards.filter(x=>x.id!==c.id),'Card deleted')){settings.close();editor.close();}}));settings.append(actions);showDialog(settings);}
+function openAccount(){
+ if(!accountInfo||!boardAuth)return;
+ dialogHead(settings,'Your account');settings.append(el('p','auth-account',accountInfo.label));
+ settings.append(el('p','hint','Your boards and projects are private to this account.'));
+ const signOut=button('Sign out','secondary',signOutBoard);signOut.dataset.saveAllowed='true';settings.append(signOut);showDialog(settings);syncSaveUi();
+}
+async function signOutBoard(){
+ const auth=boardAuth;if(!auth)return;
+ if(hasUnsavedChanges() && !window.confirm('There are pending or unsaved changes. A pending save may still complete. Download unsaved changes before signing out. Sign out anyway?'))return;
+ await auth.signOut(new URL(window.location.pathname,window.location.origin).href);
+}
+function nameDialog(title,onSave,value=''){dialogHead(settings,title);const form=el('form');const input=field(form,'Name','name',value);input.required=true;input.maxLength=100;const error=el('p','error project-save-error');error.setAttribute('role','alert');form.append(error);const actions=el('div','dialog-actions');const save=el('button','primary','Save');save.type='submit';actions.append(save);form.append(actions);form.onsubmit=async e=>{e.preventDefault();if(!input.value.trim())return;const active=repository,controller=saveController;save.disabled=true;const ok=await onSave(input.value.trim());save.disabled=false;if(repository!==active||saveController!==controller)return;if(ok){markFormSaved(form);settings.close();}};settings.append(form);showDialog(settings);input.focus();}
 function openSettings(mode='options'){
  dialogHead(settings,mode==='boards'?'Your boards':mode==='about'?'A little space for everything':state.boards.find(b=>b.id===boardId).name);
  const menu=(label,fn,value)=>{const b=button(label,'menu-row',fn);if(value)b.append(el('span','hint',value));settings.append(b);};
@@ -649,32 +747,73 @@ function openSettings(mode='options'){
   menu('Rename board',()=>{settings.close();nameDialog('Rename board',name=>change(s=>s.boards.find(b=>b.id===boardId).name=name,'Board renamed'),state.boards.find(b=>b.id===boardId).name);});
   menu('New card',()=>{settings.close();openEditor();});
  }
- settings.append(el('p','menu-label','YOUR DATA'));menu('Export all boards',async()=>{try{const json=await repository.exportJSON();const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const a=el('a');a.href=url;a.download=`cardboard-${dateKey()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Backup exported');}catch(e){showError(e);}});menu('Import a backup',()=>{settings.close();document.querySelector('#import-file').click();});settings.append(el('p','hint','Import replaces all local boards. You can export your current boards first.'));settings.showModal();
+ settings.append(el('p','menu-label','YOUR DATA'));menu('Export all boards',async()=>{const active=repository;try{const json=await active.exportJSON();if(repository!==active)return;const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const a=el('a');a.href=url;a.download=`cardboard-${dateKey()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Backup exported');}catch(e){if(repository===active)showError(e);}});menu('Import a backup',()=>{settings.close();document.querySelector('#import-file').click();});settings.append(el('p','hint',`Import replaces all boards ${storageMode==='database'?'in this account':'in this browser'}. You can export your current boards first.`));showDialog(settings);
 }
-document.querySelector('#import-file').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file)return;if(file.size>5_000_000){toast('Choose a backup smaller than 5 MB.',true);return;}try{const text=await file.text();const parsed=JSON.parse(text);validateState(migrateProjects(parsed));dialogHead(settings,'Replace your local boards?');settings.append(el('p','hint',`Import ${parsed.cards.length} cards from “${file.name}”? This replaces all boards on this device.`));const actions=el('div','dialog-actions');actions.append(button('Cancel','secondary',()=>settings.close()),button('Import backup','primary',async()=>{if(busy)return;busy=true;try{state=await repository.importJSON(text);boardId=state.boards[0].id;resetFilters();render();settings.close();toast('Backup imported');}catch(err){showError(err);}finally{busy=false;}}));settings.append(actions);settings.showModal();}catch(err){toast(`Could not import: ${err.message}`,true);}};
+document.querySelector('#import-file').onchange=async e=>{
+ const active=repository,file=e.target.files[0];e.target.value='';if(!file||!active)return;
+ if(file.size>5_000_000){toast('Choose a backup smaller than 5 MB.',true);return;}
+ try{
+  const text=await file.text();if(repository!==active)return;
+  const parsed=validateState(migrateProjects(JSON.parse(text)));
+  dialogHead(settings,'Replace your boards?');
+  const destination=storageMode==='database'?`in account ${accountInfo.label}`:'in this browser';
+  settings.append(el('p','hint',`Import ${parsed.cards.length} cards from “${file.name}”? This replaces all boards ${destination}.`));
+  const actions=el('div','dialog-actions');
+  actions.append(button('Cancel','secondary',()=>settings.close()),button('Import backup','primary',async()=>{
+   if(repository!==active)return;
+   if(await persistSnapshot(parsed,'Backup imported',()=>{boardId=state.boards[0].id;resetFilters();}))settings.close();
+  }));settings.append(actions);showDialog(settings);
+ }catch(err){if(repository===active)toast(`Could not import: ${err.message}`,true);}
+};
 let resizeTimer;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(state)render();},150);});
 document.addEventListener('keydown',e=>{if(!state)return;if(e.key==='Escape'&&showSearch&&!editor.open&&!settings.open){showSearch=false;query='';render();}if((e.ctrlKey||e.metaKey)&&e.key==='k'&&!editor.open&&!settings.open){e.preventDefault();showSearch=true;render();document.querySelector('#search')?.focus();}});
 function clearPrivateState(){
- repository=undefined;state=undefined;boardId=undefined;busy=false;dragId=null;
+ saveController?.dispose();saveController=null;dirtyForms.clear();
+ endDrag();sort='manual';
+ repository=undefined;state=undefined;boardId=undefined;accountInfo=null;busy=false;dragId=null;
  resetFilters();showSearch=false;clearTimeout(toastTimer);
  document.querySelector('#toast').textContent='';document.querySelector('#toast').className='';
  for(const dialog of [editor,settings,quickActions]){if(dialog.open)dialog.close();}
  editor.replaceChildren();settings.replaceChildren();document.querySelector('#import-file').value='';
+ syncSaveUi();
 }
-async function startLocalBoard(){repository=new LocalBoardRepository(window.localStorage,createSeed());state=await repository.load();await repository.save(state);boardId=state.boards[0].id;render();}
-let unmountAuth;
+let unmountAuth,startupAttempt=0;
+async function startLocalBoard(attempt){
+ const {repository:current,snapshot:loaded}=await loadLocalBoard(window.localStorage,createSeed());
+ if(attempt!==startupAttempt)return;
+ repository=current;state=loaded;boardId=state.boards[0].id;initializeSaveController();render();
+}
+function stopDatabaseSession(){workspaceSession?.dispose();workspaceSession=null;boardAuth=null;}
+function showWorkspaceStatus(event){
+ clearPrivateState();
+ if(event.status==='ready'){
+  repository=event.repository;state=event.snapshot;accountInfo=event.account;boardId=state.boards[0].id;initializeSaveController();render();return;
+ }
+ if(event.status==='auth')return;
+ const panel=el('main','auth-preview');panel.append(el('h1','','Cardboard'));
+ const status=el('p','',event.status==='loading'?'Loading your workspace…':event.message);status.setAttribute('role','status');panel.append(status);
+ panel.append(el('p','auth-account',`Signed in as ${event.account.label}`));
+ if(event.status==='error')panel.append(button('Retry','primary',()=>workspaceSession?.retry()));
+ panel.append(button('Sign out','secondary',signOutBoard));app.replaceChildren(panel);
+}
 async function start(){
- unmountAuth?.();clearPrivateState();app.replaceChildren(el('p','fatal','Loading Cardboard…'));
+ const attempt=++startupAttempt;
+ unmountAuth?.();unmountAuth=null;stopDatabaseSession();clearPrivateState();sort='manual';app.replaceChildren(el('p','fatal','Loading Cardboard…'));
  try{
-  await startBoard({startLocal:startLocalBoard,startDatabase:()=>{
-   unmountAuth=mountAuthScreen(app,{onSessionChange:clearPrivateState});
+  await startBoard({startLocal:()=>{if(attempt===startupAttempt){storageMode='local';return startLocalBoard(attempt);}},startDatabase:()=>{
+   if(attempt!==startupAttempt)return;storageMode='database';
+   unmountAuth=mountAuthScreen(app,{
+    onSessionChange:account=>{if(account.status!=='verified'){stopDatabaseSession();clearPrivateState();}},
+    onVerified:auth=>{boardAuth=auth;workspaceSession??=createWorkspaceSession({auth,onChange:showWorkspaceStatus});},
+   });
   }});
  }catch{
+  if(attempt!==startupAttempt)return;
   clearPrivateState();const fatal=el('div','fatal');
   fatal.append(el('h1','','Your board needs attention'),el('p','error','Cardboard could not load its configuration or saved board.'),el('p','hint','Check your connection and server configuration. Existing saved data has not been replaced.'),button('Retry','primary',start));
   app.replaceChildren(fatal);
  }
 }
-window.addEventListener('pagehide',()=>{if(unmountAuth){unmountAuth();clearPrivateState();}});
+window.addEventListener('pagehide',()=>{startupAttempt++;unmountAuth?.();unmountAuth=null;stopDatabaseSession();clearPrivateState();});
 window.addEventListener('pageshow',event=>{if(event.persisted)void start();});
 start();

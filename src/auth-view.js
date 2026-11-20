@@ -7,8 +7,8 @@ function element(tag,text,className) {
   return node;
 }
 
-/** Accessible auth screen; no repository is opened at this checkpoint. */
-export function mountAuthScreen(root,{preview=false,onSessionChange=()=>{},initialize=initializeAuth,location=window.location}={}) {
+/** Shared auth screen; verified board sessions can hand off to workspace loading. */
+export function mountAuthScreen(root,{preview=false,onSessionChange=()=>{},onVerified,initialize=initializeAuth,location=window.location}={}) {
   let stopped=false,unsubscribe,auth;
   const returnUrl=new URL(preview ? '/sign-in-preview' : location.pathname,location.origin).href;
   function shell(message) {
@@ -33,6 +33,7 @@ export function mountAuthScreen(root,{preview=false,onSessionChange=()=>{},initi
   function render(state) {
     if (stopped) return;
     onSessionChange(state);
+    if (state.status==='verified' && onVerified) {onVerified(auth,state);return;}
     const messages={loading:'Loading sign-in…','signed-out':'Use your invited email address to sign in.',
       verifying:'Verifying your account…',verified:'Signed in. Cardboard verified your Clerk session.',error:state.message};
     const panel=shell(messages[state.status]);

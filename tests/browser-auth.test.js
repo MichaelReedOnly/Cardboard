@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createAuthController,createAuthInitializer} from '../src/auth.js';
-import {startBoard} from '../src/board-startup.js';
+import {startBoard,loadLocalBoard} from '../src/board-startup.js';
 
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 const response=(body,ok=true)=>({ok,json:async()=>body});
@@ -19,7 +19,7 @@ function fixture(fetchImpl=async()=>response({userId:'user_A'})) {
     clerk.session=id ? {id:`session_${id}`,user:clerk.user,getToken:async()=>`token_${id}`} : null;
     notify?.();
   }
-  return {clerk,auth,account};
+  return {clerk,auth,account,notify:()=>notify?.()};
 }
 
 test('signed out state never verifies; a verified identity uses the bearer token',async()=>{
@@ -136,4 +136,34 @@ test('initialization shares one Clerk load and retries after configuration failu
   const [first,second]=await Promise.all([initialize(),initialize()]);
   assert.equal(first,second);assert.equal(fetches,2);assert.equal(loads,1);
   assert.equal(await initialize(),first);first.dispose();
+});
+
+test('unchanged active-session notifications retain verification and an in-flight token',async()=>{
+  let checks=0;
+  const {auth,account,notify,clerk}=fixture(async()=>{checks++;return response({userId:'user_A'});});
+  account('user_A');await auth.refresh();const baseline=checks;
+  const pending=deferred();clerk.session.getToken=()=>pending.promise;
+  const token=auth.getToken();notify();pending.resolve('same-session-token');
+  assert.equal(await token,'same-session-token');assert.equal(checks,baseline);
+  assert.equal(auth.state.status,'verified');auth.dispose();
+});
+
+test('equivalent session objects do not reload verification but ended sessions clear identity',async()=>{
+  let checks=0;
+  const {auth,account,notify,clerk}=fixture(async()=>{checks++;return response({userId:'user_A'});});
+  account('user_A');await auth.refresh();const baseline=checks;
+  clerk.session={...clerk.session};notify();
+  assert.equal(checks,baseline);assert.equal(await auth.getToken(),'token_user_A');
+  clerk.session.status='ended';notify();assert.equal(auth.state.status,'signed-out');
+  await assert.rejects(()=>auth.getToken(),/Sign-in required/);auth.dispose();
+});
+
+test('opening standalone local data never writes during first use or reload',async()=>{
+  const seed={version:1,boards:[{id:'local',name:'All'}],projects:[],cards:[]};
+  for(const raw of [null,JSON.stringify(seed)]) {
+    let reads=0;
+    const storage={getItem(){reads++;return raw;},setItem(){assert.fail('Startup must not write');}};
+    const result=await loadLocalBoard(storage,seed);
+    assert.deepEqual(result.snapshot,seed);assert.equal(reads,1);
+  }
 });

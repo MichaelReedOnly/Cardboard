@@ -56,8 +56,13 @@ test('database mode serves the auth entry page with Clerk permissions and keeps 
     assert.equal(response.status,200);
     assert.match(await response.text(),/src="\/src\/app.js"/);
     assert.match(response.headers.get('content-security-policy'),/https:\/\/clerk.example.com/);
+    const policy=response.headers.get('content-security-policy');
+    assert.match(policy,/worker-src 'self' blob:/);
+    assert.match(policy,/script-src[^;]*https:\/\/\*\.protect\.clerk\.com/);
+    assert.match(policy,/connect-src[^;]*https:\/\/\*\.protect\.clerk\.com:\*/);
+    assert.match(policy,/frame-src[^;]*https:\/\/challenges\.cloudflare\.com/);
   }
-  assert.deepEqual(await (await fetch(base+'/api/config')).json(),{storageMode:'database',boardReady:false});
+  assert.deepEqual(await (await fetch(base+'/api/config')).json(),{storageMode:'database',boardReady:true});
   const preview=await fetch(base+'/sign-in-preview');
   assert.equal(preview.status,200);
   assert.match(preview.headers.get('content-security-policy'),/https:\/\/clerk.example.com/);

@@ -94,7 +94,9 @@ export class ApiBoardRepository {
       // A timed-out token request must not transmit later when it eventually resolves.
       if (controller.signal.aborted) throw new ApiStorageError('network','Workspace request timed out.');
       if (!token) throw new ApiStorageError('auth','Sign in again before accessing your workspace.');
-      const response=await this.#fetch('/api/workspace',{
+      // A browser's native fetch must not receive this repository as its receiver.
+      const fetchWorkspace=this.#fetch;
+      const response=await fetchWorkspace('/api/workspace',{
         method,headers:{Authorization:`Bearer ${token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},
         ...(body===undefined?{}:{body}),cache:'no-store',credentials:'omit',signal:controller.signal,
       });
