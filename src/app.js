@@ -2,13 +2,15 @@ import {createSeed} from './seed.js';
 import {startBoard,loadLocalBoard} from './board-startup.js';
 import {mountAuthScreen} from './auth-view.js';
 import {createWorkspaceSession,createEmptyWorkspace} from './workspace-session.js';
-import {SaveController,saveSummary,shouldWarnBeforeLeaving} from './save-controller.js';
+import {SaveController,saveSummary,shouldWarnBeforeLeaving,snapshotsEqual} from './save-controller.js';
 import {createPendingControlLock,dirtyFormForEvent} from './save-controls.js';
 import {renderRecoveryDialog,recoveryChoicePrompt} from './recovery-view.js';
 import {bindSessionLifecycle,openDialogUnderSessionGate} from './session-lifecycle.js';
 import {readLocalWorkspaceJSON} from './storage.js';
 import {WorkspaceMigration,captureMigrationOwner} from './workspace-migration.js';
 import {renderMigrationDialog,migrationConfirmation} from './migration-view.js';
+import {createPomodoroStore,DEFAULT_FOCUS_MINUTES,FOCUS_MINUTES,getTimerDisplay,transitionTimer} from './pomodoro.js';
+import {createPomodoroView,playPomodoroChime} from './pomodoro-view.js';
 import {balanceColumns,cardTextSize,clone,displayColumnCount,getColumns,isPhotoSource,MAX_PHOTO_DATA_LENGTH,MAX_CARD_TEXT,MAX_COLUMNS,MIN_CARD_TEXT,POST_IT_COLORS,moveCardToColumnEnd,moveInColumns,parseItems,reconcileLayouts,swapCardsInColumns,deleteProject,matchesProject,migrateProjects,nextProjectColor,setProjectName,validateState} from './model.js';
 
 const paths={photo:'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M11 9a2 2 0 1 1-4 0 2 2 0 0 1 4 0 M6 21l8-8a2 2 0 0 1 3 0l4 4',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',more:'M5 12h.01 M12 12h.01 M19 12h.01',user:'M20 21a8 8 0 0 0-16 0 M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',plus:'M12 4v16 M4 12h16',down:'M6 9l6 6 6-6',close:'M6 6l12 12 M18 6L6 18',check:'M5 12l4 4L19 6',sun:'M12 2v2 M12 20v2 M2 12h2 M20 12h2 M5 5l1.5 1.5 M17.5 17.5L19 19 M5 19l1.5-1.5 M17.5 6.5L19 5 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M4 5h16v16H4z M8 2v6 M16 2v6 M4 10h16 M8 14h2 M14 14h2 M8 17h2',note:'M6 2h9l4 4v16H6z M14 2v6h5 M9 12h7 M9 15h7 M9 18h5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',pin:'M9 3h6 M10 3v6l-4 5h12l-4-5V3 M12 14v7',up:'M6 14l6-6 6 6'};
@@ -26,6 +28,11 @@ let storageMode='local',accountInfo=null,boardAuth=null,workspaceSession=null;
 let sessionLifecycle=null;
 let saveController=null;
 let migrationSession=null,pendingImportTicket=null;
+let pomodoroStore,pomodoroInterval,pomodoroAudio,pomodoroReplacement;
+let pendingPomodoroTestId;
+let pomodoroChime=false;
+const pomodoroViews=new Map();
+const pomodoroTests=new Map();
 const dirtyForms=new Set(),lockSaveControls=createPendingControlLock();
 const app=document.querySelector('#app'),editor=document.querySelector('#editor'),settings=document.querySelector('#settings');
 const saveFeedback=el('section','save-feedback');saveFeedback.hidden=true;saveFeedback.setAttribute('aria-label','Unsaved changes');
@@ -123,14 +130,17 @@ async function change(fn,message,afterSave){
  try{const next=clone(state);if(fn(next)===false)return true;reconcileLayouts(next);return await persistSnapshot(next,message,afterSave);}
  catch(e){showError(e);return false;}
 }
-async function persistSnapshot(next,message,afterSave){
+async function persistSnapshot(next,message,afterSave,replacePomodoros=false){
  const active=repository,controller=saveController;
  if(!active||!controller)return false;
  if(!sessionUiReady()){showError({message:'Verify your session before saving changes.'});return false;}
  if(busy){showError({message:'A save is in progress. Wait for it to finish, then try that action again.'});return false;}
+ const previous=controller.acknowledgedSnapshot;
+ if(replacePomodoros)pomodoroReplacement=next;
  try{
   const saved=await controller.save(next);
   if(repository!==active||saveController!==controller)return false;
+  updatePomodoroAfterSave(previous,saved);
   state=saved;afterSave?.();render();if(message)toast(message);return true;
  }catch{
   if(repository!==active||saveController!==controller)return false;
@@ -183,8 +193,9 @@ async function performRecovery(controller,action,onResult){
  }
 }
 function checkLatestRecovery(controller){
+ const previous=controller.acknowledgedSnapshot;
  return performRecovery(controller,()=>controller.checkLatest(),result=>{
-  if(result.matched){applyRecoveredSnapshot(result.snapshot);toast('Your submitted changes are present in the saved workspace.');}
+  if(result.matched){updatePomodoroAfterSave(previous,result.snapshot);applyRecoveredSnapshot(result.snapshot);toast('Your submitted changes are present in the saved workspace.');}
  });
 }
 function chooseRecovery(controller,choice){
@@ -192,9 +203,11 @@ function chooseRecovery(controller,choice){
  const details=controller.recoveryDetails;
  if(!details.latest||!details.candidate)return;
  if(!window.confirm(recoveryChoicePrompt(details,choice,dirtyForms.size>0)))return;
+ const previous=controller.acknowledgedSnapshot;
  return performRecovery(controller,()=>choice==='replace'
   ? controller.replaceLatest({confirmed:true,revision:details.latest.revision})
   : controller.useLatest({confirmed:true,revision:details.latest.revision}),snapshot=>{
+   updatePomodoroAfterSave(previous,snapshot);
    applyRecoveredSnapshot(snapshot,true);toast(choice==='replace'?'Your changes replaced the checked saved version.':'Checked saved version loaded.');
   });
 }
@@ -206,6 +219,7 @@ function refreshRecoveryDialog(controller){
  });
 }
 function showSessionGate(unavailable=false){
+ stopPomodoroTicks();
  const auth=boardAuth;
  document.documentElement.classList.add('session-check-pending');
  sessionGate.replaceChildren(el('h2','','Checking your account'));
@@ -220,6 +234,7 @@ function showSessionGate(unavailable=false){
 function resumeSessionUi(){
  document.documentElement.classList.remove('session-check-pending');
  if(sessionGate.open)sessionGate.close();sessionGate.replaceChildren();
+ refreshPomodoroTimers();
 }
 function sessionUiReady(){return !sessionGate.open && (storageMode==='local'||(boardAuth?.state.status==='verified'&&!boardAuth.state.suspended));}
 function importOwnerContext(){return {auth:storageMode==='database'?boardAuth:null,repository,saveController};}
@@ -276,11 +291,13 @@ async function commitMigration(current){
  try{
   const saved=await current.commit({confirmed:true,revision:details.destination.revision});
   if(current!==migrationSession||repository!==active||saveController!==controller)return;
+  pomodoroStore?.clear();pomodoroTests.clear();pomodoroReplacement=undefined;pendingPomodoroTestId=undefined;
   state=saved;boardId=state.boards[0].id;resetFilters();closeMigration(true);
   for(const dialog of [settings,quickActions])if(dialog.open)dialog.close();render();toast('Imported into your account. The source is unchanged.');
  }catch{
   if(current!==migrationSession||repository!==active||saveController!==controller)return;
   const retained=controller.recoverySnapshot;
+  pomodoroReplacement=retained ?? undefined;
   if(retained){state=retained;boardId=state.boards[0].id;resetFilters();render();}
   refreshMigrationDialog();showError({message:controller.status.message||current.details.message});
  }
@@ -484,9 +501,97 @@ function renderFilters() {
   );
   return filters;
 }
+function updatePomodoroAfterSave(previous,saved){
+ if(pomodoroReplacement && snapshotsEqual(pomodoroReplacement,saved)){
+   pomodoroStore?.clear();
+   pomodoroTests.clear();
+ }else{
+   const remaining=new Set(saved?.cards.filter(card=>card.type==='pomodoro').map(card=>card.id));
+   for(const card of previous.cards){
+     if(card.type==='pomodoro' && !remaining.has(card.id)){
+       pomodoroStore?.remove(card.id);
+       pomodoroTests.delete(card.id);
+     }
+   }
+   if(remaining.has(pendingPomodoroTestId) && !previous.cards.some(card=>card.id===pendingPomodoroTestId)){
+     pomodoroChime=true;
+     pomodoroTests.set(pendingPomodoroTestId,transitionTimer(null,{type:'start-test'},Date.now()));
+   }
+ }
+ pomodoroReplacement=undefined;
+ pendingPomodoroTestId=undefined;
+}
+function startPomodoroStore(owner){
+ let storage;
+ try{storage=window.localStorage;}catch{}
+ pomodoroStore=createPomodoroStore(storage,owner);
+}
+function stopPomodoroTicks(){
+ clearInterval(pomodoroInterval);
+ pomodoroInterval=undefined;
+}
+function refreshPomodoroTimers(sound=false){
+ if(!pomodoroStore || !sessionUiReady() || document.hidden){stopPomodoroTicks();return;}
+ const now=Date.now();
+ let running=false;
+ for(const [id,view] of pomodoroViews){
+   const previous=pomodoroTests.get(id)??pomodoroStore.read(id);
+   const session=transitionTimer(previous,{type:'tick'},now);
+   if(session!==previous){
+     if(session.phase==='test')pomodoroTests.set(id,session);
+     else pomodoroStore.write(id,session);
+     if(sound && pomodoroChime)playPomodoroChime(pomodoroAudio);
+   }
+   view.update(getTimerDisplay(session,now),pomodoroChime);
+   if(session?.status==='running')running=true;
+ }
+ if(running && pomodoroInterval===undefined)pomodoroInterval=setInterval(()=>refreshPomodoroTimers(true),250);
+ if(!running)stopPomodoroTicks();
+}
+document.addEventListener('visibilitychange',()=>refreshPomodoroTimers());
+async function preparePomodoroAudio(){
+ try{
+   pomodoroAudio??=new AudioContext();
+   await pomodoroAudio.resume();
+ }catch{}
+}
+async function togglePomodoroChime(){
+ if(!sessionUiReady())return;
+ if(pomodoroChime){pomodoroChime=false;refreshPomodoroTimers();return;}
+ const store=pomodoroStore;
+ await preparePomodoroAudio();
+ if(store!==pomodoroStore || !sessionUiReady())return;
+ pomodoroChime=pomodoroAudio?.state==='running';
+ refreshPomodoroTimers();
+}
+function mountPomodoro(card){
+ const store=pomodoroStore;
+ const view=createPomodoroView({
+   defaultMinutes:card.pomodoroMinutes??DEFAULT_FOCUS_MINUTES,
+   onToggleChime:togglePomodoroChime,
+   onAction(action){
+     if(store!==pomodoroStore || !sessionUiReady() || pomodoroViews.get(card.id)!==view)return;
+     const test=pomodoroTests.get(card.id);
+     if(test?.status==='running'){
+       if(action.type==='reset')pomodoroTests.delete(card.id);
+       refreshPomodoroTimers();
+       return;
+     }
+     pomodoroTests.delete(card.id);
+     const previous=store.read(card.id);
+     const next=transitionTimer(previous,action,Date.now());
+     if(next?.phase==='test')pomodoroTests.set(card.id,next);
+     else if(next!==previous)store.write(card.id,next);
+     refreshPomodoroTimers();
+   },
+ });
+ pomodoroViews.set(card.id,view);
+ return view.element;
+}
 function render(){
  if(!state)return;
  endDrag();
+ pomodoroViews.clear();
  const focusedFilter = document.activeElement?.dataset.filterKey;
  const focusSearch=document.activeElement?.id==='search';const cursor=focusSearch?document.activeElement.selectionStart:null;
  app.replaceChildren();const header=el('header');const brand=el('div','brand');brand.setAttribute('aria-hidden','true');for(let i=0;i<4;i++)brand.append(el('i'));header.append(brand);
@@ -531,6 +636,7 @@ function render(){
  if (focusedFilter) Array.from(app.querySelectorAll('[data-filter-key]')).find(control=>control.dataset.filterKey===focusedFilter)?.focus();
  if(focusSearch){const input=document.querySelector('#search');input?.focus();try{input?.setSelectionRange(cursor,cursor);}catch{}}
  syncSaveUi();
+ refreshPomodoroTimers();
 }
 function todoCheckbox(done, onToggle) {
   const check = button('To-do completed','check todo-check',onToggle);
@@ -549,7 +655,7 @@ function renderCard(c,count){
  const canSwap = () => dragId && dragId!==c.id
    && state.cards.some(card=>card.id===dragId && card.pinned===c.pinned);
  card.ondragstart = event => {
-   if (sort!=='manual' || event.target.closest('button,a')) {
+   if (sort!=='manual' || event.target.closest('button,a,.pomodoro-timer')) {
      event.preventDefault();
      return;
    }
@@ -594,6 +700,9 @@ function renderCard(c,count){
    if(c.type==='link'&&c.url){const link=el('a','link-preview');link.href=c.url;link.target='_blank';link.rel='noopener noreferrer';link.append(el('small','',new URL(c.url).hostname),el('strong','',c.url));card.append(link,el('div','section-label','WHY I SAVED IT'));}
    if (c.type === 'photo') {
      card.append(photoPreview(c.photoSource,c.title),el('div','note-body photo-description',c.body || 'One line about this photo'));
+   } else if (c.type === 'pomodoro') {
+     card.append(mountPomodoro(c));
+     if(c.body)card.append(el('div','note-body',c.body));
    } else if (c.type === 'post-it') {
      const surface = el('div','post-it-surface');
      stylePostIt(surface,c.postItColor,c.postItAlignment);
@@ -795,7 +904,9 @@ function photoEditor(card) {
 
 function openEditor(id){
  const existing=state.cards.find(c=>c.id===id);const c=existing||{id:crypto.randomUUID(),title:'',type:'note',projectId:projectSelection?.size===1?[...projectSelection][0]:null,date:dateFilter==='today'?dateKey():dateFilter==='tomorrow'?dateKey(1):'',pinned:false,body:'',items:[],boardId};
- dialogHead(editor,existing?'Your card':'A new card');const form=el('form');const title=field(form,'Title','title',c.title);title.required=true;title.maxLength=200;field(form,'Card type','type',c.type,'select',[['note','Note'],['checklist','Checklist'],['week','Week planner'],['link','Link'],['post-it','Post-it'],['photo','Photo'],['single-todo','To-do']]);
+ dialogHead(editor,existing?'Your card':'A new card');const form=el('form');const title=field(form,'Title','title',c.title);title.required=true;title.maxLength=200;field(form,'Card type','type',c.type,'select',[['note','Note'],['checklist','Checklist'],['week','Week planner'],['link','Link'],['post-it','Post-it'],['photo','Photo'],['single-todo','To-do'],['pomodoro','Pomodoro']]);
+ const pomodoroMinutes=field(form,'Default focus duration','pomodoroMinutes',c.pomodoroMinutes??DEFAULT_FOCUS_MINUTES,'select',
+   FOCUS_MINUTES.map(minutes=>[minutes,`${minutes} min`]));
  const row = el('div','field-row');
  const projectField = el('div','card-project-field');
  const project = field(projectField,'Project','projectId',c.projectId || '','select',
@@ -840,6 +951,7 @@ function openEditor(id){
    title.parentElement.hidden = isTodo;
    postIt.panel.hidden = type !== 'post-it';
    photo.panel.hidden = !isPhoto;
+   pomodoroMinutes.parentElement.hidden = type !== 'pomodoro';
    taskRow.hidden = type === 'post-it';
    taskRow.classList.toggle('todo-editor-active',isTodo);
    todoCheck.hidden = !isTodo;
@@ -874,7 +986,19 @@ function openEditor(id){
   }
   const cardTitle = type === 'single-todo' ? task.replace(/\s+/g,' ').slice(0,200) : title.value.trim();
   const updated={...c,...photoValues,...(type==='single-todo'?{todoDone}:{}),...(type==='post-it'?postIt.values():{}),title:cardTitle,type,projectId:type==='single-todo'?null:project.value||null,date:date.value,body:body.value,pinned:pin.checked,url:type==='link'?url.value:'',items:['week','checklist'].includes(type)?parseItems(list.value,type,c.items):[]};
-  const active=repository,controller=saveController;save.disabled=true;const ok=await change(s=>{const i=s.cards.findIndex(x=>x.id===c.id);if(i<0)s.cards.push(updated);else s.cards[i]=updated;},'Card saved');save.disabled=false;if(repository!==active||saveController!==controller)return;
+  if(type==='pomodoro')updated.pomodoroMinutes=Number(pomodoroMinutes.value);
+  else delete updated.pomodoroMinutes;
+  const active=repository,controller=saveController;save.disabled=true;
+  const ok=await change(s=>{
+   const i=s.cards.findIndex(x=>x.id===c.id);
+   if(i<0){
+    s.cards.push(updated);
+    if(type==='pomodoro'){
+     pendingPomodoroTestId=c.id;
+     void preparePomodoroAudio();
+    }
+   }else s.cards[i]=updated;
+  },'Card saved');save.disabled=false;if(repository!==active||saveController!==controller)return;
   if(ok){markFormSaved(form);editor.close();}else error.textContent=saveController?.status.message||'Could not save. Your changes are still here; try again.';
  };editor.append(form);showDialog(editor);(c.type==='single-todo'?body:title).focus();
 }
@@ -923,13 +1047,17 @@ document.querySelector('#import-file').onchange=async e=>{
   const actions=el('div','dialog-actions');
   actions.append(button('Cancel','secondary',()=>settings.close()),button('Import backup','primary',async()=>{
    if(repository!==active)return;
-   if(await persistSnapshot(parsed,'Backup imported',()=>{boardId=state.boards[0].id;resetFilters();}))settings.close();
+   if(await persistSnapshot(parsed,'Backup imported',()=>{boardId=state.boards[0].id;resetFilters();},true))settings.close();
   }));settings.append(actions);showDialog(settings);
  }catch(err){if(repository===active)toast(`Could not import: ${err.message}`,true);}
 };
 let resizeTimer;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(state)render();},150);});
 document.addEventListener('keydown',e=>{if(!state)return;if(e.key==='Escape'&&showSearch&&!editor.open&&!settings.open){showSearch=false;query='';render();}if((e.ctrlKey||e.metaKey)&&e.key==='k'&&!editor.open&&!settings.open){e.preventDefault();showSearch=true;render();document.querySelector('#search')?.focus();}});
 function clearPrivateState(){
+ stopPomodoroTicks();pomodoroViews.clear();pomodoroTests.clear();pomodoroStore=undefined;pomodoroReplacement=undefined;
+ pendingPomodoroTestId=undefined;
+ pomodoroChime=false;
+ if(pomodoroAudio){pomodoroAudio.close().catch(()=>{});pomodoroAudio=undefined;}
  closeMigration(true);pendingImportTicket=null;
  saveController?.dispose();saveController=null;dirtyForms.clear();
  endDrag();sort='manual';
@@ -945,7 +1073,7 @@ let unmountAuth,startupAttempt=0;
 async function startLocalBoard(attempt){
  const {repository:current,snapshot:loaded}=await loadLocalBoard(window.localStorage,createSeed());
  if(attempt!==startupAttempt)return;
- repository=current;state=loaded;boardId=state.boards[0].id;initializeSaveController();render();
+ repository=current;state=loaded;boardId=state.boards[0].id;startPomodoroStore('local');initializeSaveController();render();
 }
 function stopDatabaseSession(){
  sessionLifecycle?.dispose();sessionLifecycle=null;resumeSessionUi();
@@ -954,7 +1082,8 @@ function stopDatabaseSession(){
 function showWorkspaceStatus(event){
  clearPrivateState();
  if(event.status==='ready'){
-  repository=event.repository;state=event.snapshot;accountInfo=event.account;boardId=state.boards[0].id;initializeSaveController();render();return;
+  repository=event.repository;state=event.snapshot;accountInfo=event.account;boardId=state.boards[0].id;
+  startPomodoroStore(`account:${accountInfo.userId}`);initializeSaveController();render();return;
  }
  if(event.status==='auth')return;
  const panel=el('main','auth-preview');panel.append(el('h1','','Cardboard'));

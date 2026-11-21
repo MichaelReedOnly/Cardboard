@@ -116,6 +116,85 @@
 }
 .board.compact-columns :is(.card-header,.check-row) { flex-wrap: wrap; }
 .board.compact-columns .item-text { flex-basis: 65%; }
+.pomodoro-timer {
+  container-type: inline-size;
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin: 8px 0;
+  padding: clamp(5px, 4%, 13px);
+  border-radius: 12px;
+  --timer-lit: #ffc46c;
+  --timer-face: #201e1a;
+  background: var(--timer-face);
+  color: var(--timer-lit);
+  box-shadow: inset 0 0 0 1px #ffffff24, inset 0 3px 8px #0008;
+  color-scheme: dark;
+  font-size: var(--card-text, .875rem);
+  overflow-wrap: anywhere;
+}
+.pomodoro-timer[data-phase=break] { --timer-lit: #a6ecc4; }
+.pomodoro-timer [role=status] {
+  font-size: max(.625rem, .72em);
+  font-weight: 650;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.pomodoro-time {
+  font-size: clamp(.9rem, 25cqi, calc(var(--card-text, .875rem) * 2.4));
+  font-weight: 700;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.pomodoro-timer progress {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 5px;
+  appearance: none;
+  border: 0;
+  background: #ffffff25;
+  accent-color: var(--timer-lit);
+  mask-image: repeating-linear-gradient(to right, #000 0 6px, transparent 6px 8px);
+}
+.pomodoro-timer progress::-webkit-progress-bar { background: #ffffff25; }
+.pomodoro-timer progress::-webkit-progress-value { background: var(--timer-lit); }
+.pomodoro-timer progress::-moz-progress-bar { background: var(--timer-lit); }
+.pomodoro-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.pomodoro-timer :is(button,select) {
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 7px;
+  min-height: 26px;
+  font-size: max(.6875rem, .8em);
+  white-space: normal;
+}
+.pomodoro-timer select {
+  width: auto;
+}
+.pomodoro-timer :is(.primary,.secondary,select) { border-radius: 5px; }
+.pomodoro-timer :is(.secondary,select) { background: #413b31; color: #fff3dc; }
+.pomodoro-timer .primary { background: var(--timer-lit); color: #201e1a; }
+.pomodoro-chime {
+  justify-self: start;
+  background: transparent;
+  text-align: left;
+  color: #ded2bc;
+}
+.pomodoro-chime[aria-pressed=true] {
+  background: #413b31;
+  color: var(--timer-lit);
+}
+.pomodoro-timer :is(button,select):focus-visible {
+  outline: 2px solid var(--timer-lit);
+  outline-offset: 1px;
+}
 
 .post-it-surface {
   display: grid;

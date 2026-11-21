@@ -1,3 +1,5 @@
+import {FOCUS_MINUTES} from './pomodoro.js';
+
 export const clone = value => structuredClone(value);
 export const MAX_COLUMNS = 8;
 export const MIN_CARD_TEXT = 12;
@@ -133,7 +135,8 @@ export function validateState(s) {
   }
   for(const c of s.cards){
     id(c.id);str(c.title);str(c.body);str(c.date);
-    if(!c.title.trim()||!boards.has(c.boardId)||!['note','checklist','week','link','post-it','photo','single-todo'].includes(c.type)||typeof c.pinned!=='boolean'||!Array.isArray(c.items))fail();
+    if(!c.title.trim()||!boards.has(c.boardId)||!['note','checklist','week','link','post-it','photo','single-todo','pomodoro'].includes(c.type)||typeof c.pinned!=='boolean'||!Array.isArray(c.items))fail();
+    if (c.type === 'pomodoro' && c.pomodoroMinutes !== undefined && !FOCUS_MINUTES.includes(c.pomodoroMinutes)) fail();
     if (c.type === 'single-todo' && c.todoDone !== undefined && typeof c.todoDone !== 'boolean') fail();
     if (c.type === 'photo') {
       if (c.photoSubtitle !== undefined && (typeof c.photoSubtitle !== 'string' || c.photoSubtitle.length > 160)) fail();
@@ -182,6 +185,7 @@ export function balanceColumns(cards, count) {
       heights[index] += 130 + card.body.length * .34
         + card.items.reduce((height, item) => height + Math.max(43, item.text.length * .6), 0)
         + (card.type === 'week' ? 100 : 0)
+        + (card.type === 'pomodoro' ? 150 : 0)
         + (card.type === 'post-it' || card.type === 'photo' ? 200 : 0);
     }
   }

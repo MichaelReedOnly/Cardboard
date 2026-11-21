@@ -4,6 +4,21 @@ import { LocalBoardRepository } from '../src/storage.js';
 import { moveCard, validateState, parseItems } from '../src/model.js';
 const initial = () => ({version:1,boards:[{id:'b',name:'All'}],projects:[],cards:[{id:'a',boardId:'b',title:'First',type:'note',projectId:null,date:'',pinned:false,items:[],body:'hello'},{id:'c',boardId:'b',title:'Second',type:'note',projectId:null,date:'',pinned:false,items:[],body:''}]});
 function memory(){const m=new Map();return {getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v)};}
+test('Pomodoro backups preserve presets and reject invalid presets without replacing the board', async () => {
+  const state = initial();
+  const repo = new LocalBoardRepository(memory(), initial());
+  assert.deepEqual(await repo.load(), initial());
+  Object.assign(state.cards[0], {type:'pomodoro', pomodoroMinutes:45});
+  state.cards[1].type = 'pomodoro';
+  await repo.importJSON(JSON.stringify(state));
+  const backup = JSON.parse(await repo.exportJSON());
+  assert.deepEqual(backup, state);
+  for (const minutes of ['25', 0, 30, null]) {
+    state.cards[0].pomodoroMinutes = minutes;
+    await assert.rejects(repo.importJSON(JSON.stringify(state)));
+    assert.deepEqual(await repo.load(), backup);
+  }
+});
 test('single to-do backup preserves completion and text beyond three lines',async()=>{
   const state = initial();
   const body = ['First line','Second line','Third line','Fourth line'].join('\n');

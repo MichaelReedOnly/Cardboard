@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {displayColumnCount, getColumns, moveCardToColumnEnd, reconcileLayouts, swapCardsInColumns} from '../src/model.js';
+import {balanceColumns, displayColumnCount, getColumns, moveCardToColumnEnd, reconcileLayouts, swapCardsInColumns} from '../src/model.js';
 import {LocalBoardRepository} from '../src/storage.js';
+
+test('balanced placement leaves extra space for a Pomodoro card and its actions', () => {
+  const cards = board().cards;
+  cards[0].type = 'pomodoro';
+  assert.deepEqual(balanceColumns(cards.slice(0, 3), 2), [['p'], ['a', 'b1']]);
+});
 
 function board() {
   return {version:1, boards:[{id:'b',name:'Board',layouts:{3:[['p','a','b1'],['c'],[]]}}],
